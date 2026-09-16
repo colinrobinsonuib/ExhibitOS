@@ -8,7 +8,7 @@ The intended users are exhibition producers, artists, and technicians who may no
 
 The target workflow is:
 
-**Run application → choose artwork → configure exhibition → test → configure PC → reboot.**
+**Run application → choose artwork type → place artwork files → configure exhibition → test → configure PC → reboot.**
 
 After configuration, the computer should behave like an appliance:
 
@@ -19,7 +19,7 @@ After configuration, the computer should behave like an appliance:
 * recover from common failures via a supervised watchdog and Windows Job Objects
 * require minimal daily intervention
 
-The application is implemented as a self-contained **WinUI 3** executable (`ExhibitOSManager.exe`) paired with a lightweight .NET runtime watchdog (`ExhibitWatchdog.exe`).
+The application is implemented as a self-contained **WinUI 3** executable (`ExhibitOSManager.exe`) paired with a lightweight .NET runtime watchdog (`ExhibitWatchdog.exe`), distributed as a conventional installer (`ExhibitOSSetup.exe`).
 
 Keep the application deliberately focused. This is not intended to become a general-purpose kiosk-management or fleet-management platform.
 
@@ -31,7 +31,7 @@ Support three artwork types initially.
 
 ### Video Folder
 
-The user selects a folder containing one or more videos.
+The user places one or more videos into the artwork directory.
 
 The system should:
 
@@ -40,16 +40,16 @@ The system should:
 * play fullscreen without player UI
 * loop continuously
 * hide the mouse cursor
-* support audio output
+* support audio output, routed to the configured audio device
 * automatically restart playback if the player exits unexpectedly
 
 A single-video artwork is simply a folder containing one video.
 
-**Player implementation**: Use a bundled, standalone **`mpv`** binary (`runtime/bin/mpv/mpv.exe`). It is self-contained, requires no system installer, and provides zero-chrome exhibition playback via command-line flags (`--fs --no-osc --loop-playlist=inf --cursor-autohide=always`).
+**Player implementation**: Use a bundled, standalone **`mpv`** binary (`runtime/bin/mpv/mpv.exe`). It is self-contained, requires no system installer, and provides zero-chrome exhibition playback via command-line flags (`--fs --no-osc --loop-playlist=inf --cursor-autohide=always`). When a specific audio endpoint is configured, pass `--audio-device=` to route audio directly through mpv.
 
 ### Web Artwork
 
-The user selects a folder containing a browser-based artwork.
+The user places a browser-based artwork into the artwork directory.
 
 There are two forms of Web Artwork.
 
@@ -61,9 +61,11 @@ ExhibitOS should:
 
 * validate the artwork folder (verifying `index.html` or designated entry point)
 * provide an integrated local static HTTP server using the bundled Node.js runtime
-* serve the artwork from localhost
-* open it automatically in **Microsoft Edge** in fullscreen kiosk mode (`--kiosk http://localhost:<port> --edge-kiosk-type=fullscreen --no-first-run --overscroll-history-navigation=0 --disable-pinch`)
-* monitor the required runtime components
+* bind the static server to `127.0.0.1` on an OS-assigned free port (no fixed port reservation)
+* the static server reports its assigned port to the watchdog, which then launches Edge at the corresponding `http://127.0.0.1:<port>` URL
+* open it automatically in **Microsoft Edge** in fullscreen kiosk mode (`--kiosk http://127.0.0.1:<port> --edge-kiosk-type=fullscreen --no-first-run --overscroll-history-navigation=0 --disable-pinch`)
+* use a dedicated `--user-data-dir` for the ExhibitOS Edge instance, isolating it from any other Edge profiles or sessions
+* monitor the required runtime components independently
 * recover if the browser or static server exits unexpectedly
 
 The local server must continue functioning when external networking is disabled.
@@ -85,6 +87,10 @@ Examples might include:
 
 The backend belongs to the individual artwork. ExhibitOS's responsibility is only to provide and supervise the environment in which that backend runs.
 
+**Entry Point Convention**: The presence of `server.js` in the artwork directory identifies a backend-enabled artwork. ExhibitOS runs `server.js` with the bundled Node.js runtime. The artwork's server serves both its frontend and any artwork-specific API on the same port.
+
+**Port Assignment**: The backend server binds to `127.0.0.1` on an OS-assigned free port, using the same dynamic port strategy as the static server. ExhibitOS communicates the required port to the backend (e.g., via environment variable) and the backend reports its listening port back to the watchdog.
+
 **Node.js Runtime Specification**:
 * ExhibitOS ships a known, pinned **Node.js LTS** runtime in its local runtime directory (`runtime/bin/node/node.exe`).
 * Do **not** globally install Node.js.
@@ -96,9 +102,8 @@ Conceptually:
 
 ```text
 Artwork/
-    package.json
-    node_modules/
     server.js
+    node_modules/
     public/
         index.html
         app.js
@@ -107,19 +112,19 @@ Artwork/
 
 ExhibitOS should:
 
-* identify a backend-enabled artwork
+* identify a backend-enabled artwork by the presence of `server.js`
 * start its backend using the bundled Node.js runtime with the appropriate working directory
 * **Readiness probe**: poll the configured localhost URL/endpoint (with exponential backoff and timeout) until the backend responds before launching the browser, preventing "This site can't be reached" errors
-* open its localhost URL in **Microsoft Edge** in fullscreen kiosk mode
-* monitor the backend process tree within a Windows Job Object
-* restart it if it unexpectedly exits
+* open its localhost URL in **Microsoft Edge** in fullscreen kiosk mode with a dedicated `--user-data-dir`
+* monitor the backend process and browser independently within separate component Job Objects
+* restart the appropriate component if it unexpectedly exits
 * stop it cleanly when the exhibition closes
 
-The artwork's Node server may serve both its frontend and its artwork-specific API. ExhibitOS should **not need to understand the API endpoints or functionality provided by an artwork backend**.
+The artwork's Node server serves both its frontend and its artwork-specific API. ExhibitOS should **not need to understand the API endpoints or functionality provided by an artwork backend**.
 
 ### Application
 
-The user selects an artwork folder and executable.
+The user places an artwork executable (or launch script) into the artwork directory and specifies the entry point.
 
 This supports interactive works such as Unity applications, Unreal builds, OpenFrameworks, or TouchDesigner executables.
 
@@ -131,20 +136,22 @@ ExhibitOS should:
 * monitor it
 * relaunch it if it unexpectedly exits
 
+Artists who need custom launch parameters (e.g., Unity's `-screen-fullscreen 1 -screen-width 1920`) should provide a batch script or wrapper as their launch executable rather than the artwork binary directly. ExhibitOS does not manage command-line arguments for artwork executables.
+
 ---
 
-## 3. Managed Artwork & Filesystem Layout
+## 3. Artwork Directory & Filesystem Layout
 
-When configuring a PC, copy the selected artwork into an application-managed location on the local machine (`C:\ExhibitOS\artwork`).
+ExhibitOS creates a managed directory structure on the local machine. **ExhibitOS does not copy artwork files.** The operator copies artwork files into the artwork directory manually using whichever method is appropriate (USB drive, network share, download, etc.).
 
-Do not depend on the original USB drive, Downloads folder, or network share remaining available.
+The setup wizard creates the directory structure and provides an **Open Folder** button that opens `C:\ExhibitOS\artwork` in a standard Windows Explorer window, allowing the operator to populate it.
 
 Application layout:
 
 ```text
 C:\ExhibitOS\
     artwork/
-        [copied artwork files and node_modules]
+        [operator places artwork files here]
     config/
         exhibition.json
     logs/
@@ -174,6 +181,16 @@ Rather than relying on Windows Assigned Access / Shell Launcher v2 (which have s
 * Create a dedicated standard local Windows user account named **`ArtworkUser`**.
 * The `ArtworkUser` account is created **without a password**.
 * Configure Windows `AutoAdminLogon` so the system automatically logs into `ArtworkUser` after boot.
+
+### Account Security Hardening
+
+Although Windows default security policy prevents blank-password local accounts from remote interactive and network logons (usable only at the physical console), ExhibitOS must not depend on machine defaults. ExhibitOS explicitly hardens the `ArtworkUser` account:
+
+* **Verify and enforce** the "Limit local account use of blank passwords to console logon only" security policy.
+* **Deny log on through Remote Desktop Services** for `ArtworkUser` via local security policy user rights assignment.
+* **Deny network logon** for `ArtworkUser` via local security policy user rights assignment.
+
+These restrictions do not prevent artwork processes (running under `ArtworkUser`) from making outbound LAN or Internet connections.
 
 ### Custom User Shell
 
@@ -205,6 +222,8 @@ Allow configuration of daily:
 * closing time (e.g. `20:00`)
 * morning reboot time (e.g. `06:45`)
 * overnight power mode
+
+Schedule times use the machine's local timezone. The setup wizard displays the PC's current timezone alongside the schedule configuration (e.g., `Europe/Oslo`) so a misconfigured Windows timezone is visible before committing.
 
 ### Daytime Operation
 
@@ -264,6 +283,7 @@ Provide three networking modes configured via the **Windows Filtering Platform (
 Windows configuration is applied idempotently by `ExhibitOSManager.exe` running elevated:
 
 * creation of the passwordless `ArtworkUser` account
+* hardening of `ArtworkUser` security: enforce blank-password console-only policy, deny Remote Desktop logon, deny network logon
 * configuration of `AutoAdminLogon` for `ArtworkUser`
 * setting the custom user shell (`ExhibitWatchdog.exe`) for `ArtworkUser`
 * creation of Windows Task Scheduler tasks for scheduled reboot
@@ -278,53 +298,71 @@ Windows-specific provisioning code is strictly isolated from application logic. 
 
 ## 8. Runtime, Reliability & Process Supervision
 
-Artwork PC Manager assumes installations may operate unattended for weeks.
+ExhibitOS assumes installations may operate unattended for weeks.
 
-### Windows Job Objects
+### Component Job Objects
 
-`ExhibitWatchdog.exe` runs inside the `ArtworkUser` session as the custom shell. All supervised artwork child processes (`mpv.exe`, `node.exe`, `msedge.exe`, or custom application executables) are assigned to a **Windows Job Object** configured with:
+`ExhibitWatchdog.exe` runs inside the `ArtworkUser` session as the custom shell. Rather than placing all artwork processes into a single Job Object, the watchdog creates **separate component Job Objects** for independently supervised components. This enables precise failure detection — for example, "Edge died but the Node backend is fine" versus "Node crashed but Edge is still displaying an error page."
+
+Each component Job Object is configured with:
 
 ```csharp
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 ```
 
-When an artwork exits, needs restarting, or closes at the end of the day, terminating the Job Object guarantees atomic destruction of the entire process tree, preventing orphaned background processes from lingering or locking resources.
+Terminating a component's Job Object guarantees atomic destruction of that component's entire process tree, preventing orphaned background processes from lingering or locking resources.
+
+### Edge Browser Ownership
+
+ExhibitOS must reliably own, detect failure of, and terminate the entire dedicated kiosk Edge instance. To achieve this:
+
+* Use a dedicated `--user-data-dir` for the ExhibitOS Edge instance, preventing interference with other Edge profiles or sessions.
+* Before launching, ensure no stale ExhibitOS Edge instance exists from a previous run or crash.
+* Assign the Edge process to its own component Job Object. Windows child processes normally inherit their parent's job membership unless breakaway is permitted, which captures the Chromium process tree.
 
 ### Supervision Architecture
 
 ```text
 Static Web Artwork:
-    Job Object
-    ├── node.exe (bundled static server on localhost)
-    └── msedge.exe (kiosk browser pointing to localhost)
+    Node Job Object
+    └── node.exe (bundled static server on 127.0.0.1:<dynamic port>)
+    Edge Job Object
+    └── msedge.exe (kiosk browser pointing to 127.0.0.1:<port>)
 
 Backend Web Artwork:
-    Job Object
-    ├── node.exe (artwork server.js)
-    └── [Readiness check: HTTP poll until responsive]
-        └── msedge.exe (kiosk browser)
+    Node Job Object
+    └── node.exe (artwork server.js on 127.0.0.1:<dynamic port>)
+    [Readiness check: HTTP poll until responsive]
+    Edge Job Object
+    └── msedge.exe (kiosk browser)
 
 Video Folder:
-    Job Object
+    mpv Job Object
     └── mpv.exe (standalone player)
 
 Application:
-    Job Object
+    App Job Object
     └── artwork executable
 ```
 
 ### Recovery & Health Checks
 
-* If a supervised artwork process exits unexpectedly during exhibition hours, the watchdog attempts to restart it.
+* If a supervised component exits unexpectedly during exhibition hours, the watchdog attempts to restart the appropriate component independently.
 * Exponential backoff and maximum retry thresholds prevent unrecoverable crash loops.
 * For Web Artworks, the watchdog verifies the HTTP server is responsive before launching or reloading the browser.
-* All lifecycle events, process starts, exits, and crash attempts are logged to `C:\ExhibitOS\logs\watchdog.log`.
+* All lifecycle events, process starts, exits, and restart attempts are logged to `C:\ExhibitOS\logs\watchdog.log`.
+
+### Logging
+
+ExhibitOS logs must be rotated and size/time bounded so an unattended PC cannot fill its disk. The specific rotation policy (days retained, maximum size) is an implementation detail. Log files are stored in `C:\ExhibitOS\logs\`.
+
+ExhibitOS does not collect crash dumps from artwork processes in v1. Artwork crash diagnostics are the responsibility of the artwork developer.
 
 ---
 
 ## 9. Setup Interface (WinUI 3)
 
-The setup interface (`ExhibitOSManager.exe`) is a simple, modern wizard built with **WinUI 3** designed for non-experts.
+The setup interface (`ExhibitOSManager.exe`) is a simple, modern wizard built with **WinUI 3** designed for non-experts. It embeds a `requireAdministrator` manifest and prompts for UAC elevation on launch.
 
 Implementation terminology (Winlogon keys, Job Objects, firewall rules, WFP filters) is hidden behind clear, user-focused language.
 
@@ -337,13 +375,18 @@ Options:
 * **Web Artwork**
 * **Application**
 
-Select artwork folder. Automatically inspect and provide immediate feedback:
+After selection, display the artwork directory path (`C:\ExhibitOS\artwork`) with an **Open Folder** button that opens it in Windows Explorer. The operator copies their artwork files into this directory manually.
+
+Once artwork files are present, automatically inspect and provide immediate feedback:
 * `✓ Found 4 video files (mp4, mkv)`
-* `✓ Web artwork detected (Static)`
-* `✓ Web artwork with Node backend detected`
+* `✓ Web artwork detected (Static — index.html found)`
+* `✓ Web artwork with Node backend detected (server.js found)`
 * `✓ Executable found: ExhibitionWork.exe`
-* `✗ No video files found in selected folder`
+* `✗ No video files found in artwork folder`
 * `✗ No index.html or server.js found`
+
+For Web Artworks, verify that **Microsoft Edge** is installed and can launch. If Edge is not found, display:
+* `✗ Microsoft Edge is required for Web Artwork — install Edge and retry`
 
 ### Step 2 — Exhibition
 
@@ -351,6 +394,7 @@ Configure:
 * **Opening time** (default `07:00`)
 * **Closing time** (default `20:00`)
 * **Morning reboot time** (default `06:45`)
+* Display the PC's current timezone alongside the schedule (e.g., `Schedule times use this PC's timezone: Europe/Oslo`)
 * **Overnight Power Mode**:
   * *Sleep with Wake Timers* (Recommended)
   * *Shutdown*
@@ -363,7 +407,6 @@ Configure:
 ### Step 3 — Display & Sound
 
 Configure:
-* **Display Selection**: Automatic (primary) or specific connected display
 * **Audio Output Device**: Enumerate available audio endpoints (HDMI, 3.5mm, USB audio) and allow explicit device selection so audio is not lost after reboot
 * **Cursor Visibility**: Hide or Show
 * **Overnight Display Behavior**:
@@ -389,7 +432,7 @@ Show a clear summary:
 
 Action: **Configure This PC for Exhibition**
 
-Copies artwork files, writes `C:\ExhibitOS\config\exhibition.json`, provisions `ArtworkUser`, configures custom shell, creates Task Scheduler jobs, and configures firewall rules.
+Writes `C:\ExhibitOS\config\exhibition.json`, provisions `ArtworkUser` (with security hardening), configures custom shell, creates Task Scheduler jobs, and configures firewall rules.
 
 After completion, prompt: **Restart and Enter Exhibition Mode**.
 
@@ -405,8 +448,7 @@ EXHIBIT OS
 ● READY FOR EXHIBITION
 
 Artwork: Bergen Rain (Web Artwork with Backend)
-Status: Active (within exhibition hours)
-Schedule: 07:00 – 20:00
+Schedule: 07:00 – 20:00 (Europe/Oslo)
 Overnight: Sleep (Missed-reboot fallback active)
 Network: Offline Exhibition
 Audio: Line Out (Realtek High Definition Audio)
@@ -414,12 +456,15 @@ Audio: Line Out (Realtek High Definition Audio)
 [ Launch / Test Artwork ]
 [ Stop Artwork ]
 [ Run System Diagnostic ]
+[ View Logs ]
 
 [ Edit Configuration ]
 [ Restore PC to Normal Use ]
 ```
 
-Technicians can immediately check operational status, trigger tests, or edit configuration.
+Technicians can immediately check operational status, trigger tests, view recent log entries and warnings, or edit configuration.
+
+Configuration changes take effect after reboot.
 
 ---
 
@@ -429,12 +474,14 @@ The **Run System Diagnostic** button checks:
 
 * Artwork files present in `C:\ExhibitOS\artwork`
 * Bundled runtimes present (`mpv.exe`, `node.exe`)
-* Backend entry point and `node_modules` present (where applicable)
+* Microsoft Edge installed and launchable (for Web Artworks)
+* Backend entry point (`server.js`) and `node_modules` present (where applicable)
 * Backend readiness probe succeeds
 * `ArtworkUser` account exists and passwordless logon is configured
+* `ArtworkUser` security hardening is in place (Remote Desktop denied, network logon denied)
 * Custom shell registry key is correctly pointing to `ExhibitWatchdog.exe`
 * Windows Firewall rules correctly enforce the selected networking mode
-* Selected audio playback device is connected and available
+* Selected audio playback device is connected and available; warn if the configured device is missing
 * Scheduled reboot task is registered in Task Scheduler
 * Log files are writable
 
@@ -443,17 +490,28 @@ Result displayed clearly:
 
 ---
 
-## 12. Reconfiguration and Removal
+## 12. Reconfiguration, Removal & Uninstall
+
+### Restore PC to Normal Use
 
 Provide an administrator action: **Restore PC to Normal Use**.
 
-This cleanly reverses all modifications:
+This cleanly reverses all exhibition modifications:
 * Restores default Windows shell (`explorer.exe`) for all users
 * Removes custom firewall rules
 * Disables `AutoAdminLogon`
 * Removes scheduled Task Scheduler reboot jobs
 * Optionally deletes or disables the `ArtworkUser` account
 * Restores normal Windows power and notification settings
+
+### Uninstall
+
+The installer registers a standard Windows uninstaller. Uninstalling ExhibitOS:
+
+* Runs the "Restore PC to Normal Use" process (reverses all system modifications)
+* Deletes the `ArtworkUser` account
+* Removes the `C:\ExhibitOS` directory (runtime, configuration, and logs)
+* Removes the uninstaller registry entry
 
 ---
 
@@ -470,37 +528,47 @@ This cleanly reverses all modifications:
               ▼                                         ▼
    Windows Provisioning (Admin)               Artwork Session (ArtworkUser)
    • Create ArtworkUser (no pwd)              • AutoAdminLogon
-   • Register Custom Shell                    • Winlogon Shell:
-   • Task Scheduler Reboot                        ExhibitWatchdog.exe
-   • WFP / Firewall Rules                               │
-                                                        ▼
-                                               Windows Job Object
-                                             ┌──────────┼──────────┐
-                                             ▼          ▼          ▼
-                                          mpv.exe   node.exe   App.exe
-                                                        │
-                                                 [HTTP Ready?]
-                                                        │
-                                                        ▼
-                                                   msedge.exe
+   • Harden ArtworkUser security              • Winlogon Shell:
+   • Register Custom Shell                        ExhibitWatchdog.exe
+   • Task Scheduler Reboot                              │
+   • WFP / Firewall Rules                               ▼
+                                            Component Job Objects
+                                          ┌──────────┼──────────┐
+                                          ▼          ▼          ▼
+                                       mpv.exe   node.exe   App.exe
+                                                    │
+                                             [HTTP Ready?]
+                                                    │
+                                                    ▼
+                                               msedge.exe
+                                            (own Job Object)
 ```
 
 ### Component Details
 
-1. **`ExhibitOSManager.exe`**:
-   * Windows desktop app built with **C# / .NET 8 or 9** and **WinUI 3**.
-   * Packaged as a self-contained executable.
+1. **`ExhibitOSSetup.exe`**:
+   * Conventional Windows installer that installs the Manager, Watchdog, bundled Node.js runtime, mpv, and static server into `C:\ExhibitOS`, then launches the Manager.
+   * Registers a standard Windows uninstaller.
+2. **`ExhibitOSManager.exe`**:
+   * Windows desktop app built with **C# / .NET 10** and **WinUI 3**.
+   * Packaged as a self-contained executable with embedded `requireAdministrator` manifest.
    * Runs elevated with administrator privileges for setup, testing, and maintenance.
-2. **`ExhibitWatchdog.exe`**:
+3. **`ExhibitWatchdog.exe`**:
    * Lightweight, headless C# executable running in the `ArtworkUser` session.
    * Configured as the custom Winlogon shell.
-   * Manages `SetThreadExecutionState`, enforces exhibition hours, controls Job Objects, and monitors artwork health.
-3. **`exhibition.json`**:
+   * Manages `SetThreadExecutionState`, enforces exhibition hours, controls component Job Objects, monitors artwork health, and persists/re-resolves the configured audio endpoint at startup.
+   * If the configured audio device is missing at startup, the watchdog logs a warning rather than silently proceeding.
+4. **`exhibition.json`**:
    * Declarative desired state configuration file stored in `C:\ExhibitOS\config\exhibition.json`.
-4. **Bundled Runtimes**:
+   * Configuration changes require a reboot to take effect.
+5. **Bundled Runtimes**:
    * Pinned Node.js LTS portable build in `runtime/bin/node/`.
    * Pinned `mpv` standalone build in `runtime/bin/mpv/`.
-   * System **Microsoft Edge** in kiosk mode for web rendering.
+   * System **Microsoft Edge** in kiosk mode for web rendering (verified present during setup and diagnostics).
+
+### Supported Platform
+
+* **Windows 11 Home** or higher. ExhibitOS avoids features restricted to Pro/Enterprise editions.
 
 ---
 
@@ -511,9 +579,13 @@ This cleanly reverses all modifications:
   1. Automated setup and idempotent re-provisioning
   2. Auto-login into `ArtworkUser` without password prompt
   3. Custom shell launches watchdog without `explorer.exe` (no taskbar, no start menu)
-  4. `Ctrl+Alt+Delete` allows switching back to Admin
-  5. Process tree termination via Job Objects (killing watchdog terminates Edge + Node cleanly)
-  6. Missed morning reboot fallback after manual wake from sleep
-  7. Offline firewall rules block internet while preserving `localhost`
-  8. Full restoration to normal PC state
+  4. `ArtworkUser` security hardening (RDP denied, network logon denied, console-only blank password)
+  5. `Ctrl+Alt+Delete` allows switching back to Admin
+  6. Component Job Object isolation (killing Edge Job does not kill Node; killing Node Job does not kill Edge)
+  7. Edge process tree captured in Job Object via dedicated `--user-data-dir`
+  8. Missed morning reboot fallback after manual wake from sleep
+  9. Offline firewall rules block internet while preserving `localhost`
+  10. Dynamic port assignment for static and backend servers
+  11. Full restoration to normal PC state
+  12. Complete uninstall including `ArtworkUser` deletion
 * Physical mini-PC hardware verification for HDMI audio routing, projector blackout behavior, and sleep/wake timers.
