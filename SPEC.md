@@ -1,4 +1,4 @@
-# Artwork PC Manager
+# ExhibitOS (Artwork PC Manager)
 
 ## 1. Goal
 
@@ -12,22 +12,24 @@ The target workflow is:
 
 After configuration, the computer should behave like an appliance:
 
-* automatically enter the artwork environment after boot
+* automatically enter the artwork environment after boot via a dedicated restricted user (`ArtworkUser`)
 * run the artwork fullscreen
-* prevent visitors from accessing Windows
-* follow exhibition opening/closing hours
-* recover from common failures
+* prevent visitors from accessing Windows (no Explorer, no Start menu, no taskbar, no desktop shortcuts)
+* follow exhibition opening/closing hours and overnight power policies
+* recover from common failures via a supervised watchdog and Windows Job Objects
 * require minimal daily intervention
+
+The application is implemented as a self-contained **WinUI 3** executable (`ExhibitOSManager.exe`) paired with a lightweight .NET runtime watchdog (`ExhibitWatchdog.exe`).
 
 Keep the application deliberately focused. This is not intended to become a general-purpose kiosk-management or fleet-management platform.
 
 ---
 
-# 2. Artwork Types
+## 2. Artwork Types
 
 Support three artwork types initially.
 
-## Video Folder
+### Video Folder
 
 The user selects a folder containing one or more videos.
 
@@ -38,62 +40,64 @@ The system should:
 * play fullscreen without player UI
 * loop continuously
 * hide the mouse cursor
-* support audio
+* support audio output
 * automatically restart playback if the player exits unexpectedly
 
 A single-video artwork is simply a folder containing one video.
 
-Use a reliable video player suitable for unattended exhibition playback.
+**Player implementation**: Use a bundled, standalone **`mpv`** binary (`runtime/bin/mpv/mpv.exe`). It is self-contained, requires no system installer, and provides zero-chrome exhibition playback via command-line flags (`--fs --no-osc --loop-playlist=inf --cursor-autohide=always`).
 
-## Web Artwork
+### Web Artwork
 
 The user selects a folder containing a browser-based artwork.
 
 There are two forms of Web Artwork.
 
-### Static Web Artwork
+#### Static Web Artwork
 
 For ordinary HTML/JavaScript artworks with no backend requirements.
 
-Artwork PC Manager should:
+ExhibitOS should:
 
-* validate the artwork
-* provide an integrated local static HTTP server
+* validate the artwork folder (verifying `index.html` or designated entry point)
+* provide an integrated local static HTTP server using the bundled Node.js runtime
 * serve the artwork from localhost
-* open it automatically in a fullscreen kiosk browser
+* open it automatically in **Microsoft Edge** in fullscreen kiosk mode (`--kiosk http://localhost:<port> --edge-kiosk-type=fullscreen --no-first-run --overscroll-history-navigation=0 --disable-pinch`)
 * monitor the required runtime components
-* recover if the browser/server exits unexpectedly
+* recover if the browser or static server exits unexpectedly
 
 The local server must continue functioning when external networking is disabled.
 
-### Backend Web Artwork
+#### Backend Web Artwork
 
 Some browser artworks require artwork-specific backend functionality.
 
 Examples might include:
 
 * silent printing
-* communicating with hardware
+* communicating with hardware (serial, USB, DMX, microcontrollers)
 * filesystem operations
 * network requests
 * invoking system functionality
 * processing or generating content
 
-**Artwork PC Manager must not implement APIs for these behaviors.**
+**ExhibitOS must not implement APIs for these behaviors.**
 
-The backend belongs to the individual artwork.
+The backend belongs to the individual artwork. ExhibitOS's responsibility is only to provide and supervise the environment in which that backend runs.
 
-Artwork PC Manager's responsibility is only to provide and supervise the environment in which that backend runs.
-
-Use **Node.js as the supported backend runtime** for these artworks.
-
-A backend-enabled artwork should contain its own Node application and all of the code defining its API and behavior.
+**Node.js Runtime Specification**:
+* ExhibitOS ships a known, pinned **Node.js LTS** runtime in its local runtime directory (`runtime/bin/node/node.exe`).
+* Do **not** globally install Node.js.
+* Do **not** modify the system `PATH`.
+* Do **not** rely on whatever version of Node happens to exist on the host machine.
+* Do **not** run `npm install` or download dependencies on the exhibition computer. Backend artworks must arrive pre-packaged and ready to run with all their dependencies (`node_modules`).
 
 Conceptually:
 
 ```text
 Artwork/
     package.json
+    node_modules/
     server.js
     public/
         index.html
@@ -101,641 +105,415 @@ Artwork/
         assets/
 ```
 
-The exact artwork structure may evolve during implementation.
+ExhibitOS should:
 
-Artwork PC Manager should:
-
-* provide/manage a known Node.js runtime
 * identify a backend-enabled artwork
-* start its backend with the appropriate working directory
-* wait until the backend is ready
-* open its localhost URL in the kiosk browser
-* monitor the backend process
+* start its backend using the bundled Node.js runtime with the appropriate working directory
+* **Readiness probe**: poll the configured localhost URL/endpoint (with exponential backoff and timeout) until the backend responds before launching the browser, preventing "This site can't be reached" errors
+* open its localhost URL in **Microsoft Edge** in fullscreen kiosk mode
+* monitor the backend process tree within a Windows Job Object
 * restart it if it unexpectedly exits
-* stop it appropriately when the exhibition closes
+* stop it cleanly when the exhibition closes
 
-The artwork's Node server may serve both its frontend and its artwork-specific API.
+The artwork's Node server may serve both its frontend and its artwork-specific API. ExhibitOS should **not need to understand the API endpoints or functionality provided by an artwork backend**.
 
-Artwork PC Manager should **not need to understand the API endpoints or functionality provided by an artwork backend**.
-
-For example:
-
-```text
-Browser
-   │
-   │ POST /print
-   ▼
-Artwork-specific Node backend
-   │
-   └── Windows printer
-```
-
-Another artwork could use completely different endpoints and native functionality without requiring any changes to Artwork PC Manager.
-
-Backend artworks should arrive ready to run. Exhibition setup should not depend on running `npm install`, downloading dependencies, or otherwise accessing the Internet.
-
-## Application
+### Application
 
 The user selects an artwork folder and executable.
 
-This supports interactive works such as Unity applications.
+This supports interactive works such as Unity applications, Unreal builds, OpenFrameworks, or TouchDesigner executables.
 
-Artwork PC Manager should:
+ExhibitOS should:
 
 * launch the executable automatically
+* assign it to a Windows Job Object
 * run it as the primary exhibition interface
 * monitor it
 * relaunch it if it unexpectedly exits
 
 ---
 
-# 3. Managed Artwork
+## 3. Managed Artwork & Filesystem Layout
 
-When configuring a PC, copy the selected artwork into an application-managed location on the local machine.
+When configuring a PC, copy the selected artwork into an application-managed location on the local machine (`C:\ExhibitOS\artwork`).
 
-Do not depend on the original USB drive, Downloads folder, network share, etc. remaining available.
+Do not depend on the original USB drive, Downloads folder, or network share remaining available.
 
-Conceptually:
+Application layout:
 
 ```text
-ArtworkPC/
+C:\ExhibitOS\
     artwork/
+        [copied artwork files and node_modules]
     config/
+        exhibition.json
     logs/
+        exhibit.log
+        watchdog.log
     runtime/
+        ExhibitWatchdog.exe
+        bin/
+            mpv/
+                mpv.exe
+            node/
+                node.exe
+                static-server.js
+    ExhibitOSManager.exe
 ```
 
-The exact filesystem structure is an implementation decision.
+The configuration file `C:\ExhibitOS\config\exhibition.json` is human-readable JSON containing the complete desired state.
 
 ---
 
-# 4. Exhibition / Kiosk Environment
+## 4. Exhibition / Restricted User Environment
 
-Create a dedicated restricted Windows account for running the artwork.
+Rather than relying on Windows Assigned Access / Shell Launcher v2 (which have strict Windows Enterprise/IoT edition limits and fragile UWP requirements), ExhibitOS uses a **dedicated restricted local user account with a custom shell**.
 
-Configure:
+### Account Configuration
 
-* automatic login to the artwork account after boot
-* restricted access to Windows
-* automatic artwork startup
-* fullscreen presentation
-* no useful access to the Windows desktop, Start menu, taskbar, Settings, File Explorer, etc.
-* protection against ordinary attempts to exit the artwork
+* Create a dedicated standard local Windows user account named **`ArtworkUser`**.
+* The `ArtworkUser` account is created **without a password**.
+* Configure Windows `AutoAdminLogon` so the system automatically logs into `ArtworkUser` after boot.
 
-Prefer Windows' actual kiosk/restricted-user facilities, including Assigned Access and related Windows capabilities, rather than implementing a pseudo-kiosk entirely through keyboard interception.
+### Custom User Shell
 
-Different artwork types may use different underlying Windows mechanisms where necessary.
+Configure the user shell specifically for `ArtworkUser` via the registry:
 
-Visitors may have access to keyboards and mice, so preventing escape from the artwork is a core requirement.
+```text
+HKU\<ArtworkUser_SID>\Software\Microsoft\Windows NT\CurrentVersion\Winlogon\Shell = "C:\ExhibitOS\runtime\ExhibitWatchdog.exe"
+```
 
-`Ctrl+Alt+Delete` should remain the standard technician escape route to the Windows security/sign-in interface.
+* When `ArtworkUser` logs on, **`explorer.exe` is never launched**.
+* Without Explorer, there is no desktop, no taskbar, no Start menu, no system notifications, and no standard shell hotkeys (`Win+E`, `Win+R`, `Win+X`).
+* The watchdog (`ExhibitWatchdog.exe`) is the shell: it starts up immediately, establishes the display/power state, enforces the schedule, and supervises the artwork process tree.
+* Protection against visitor escape: visitors cannot access Windows Explorer, the command prompt, or settings.
 
-A separate administrator account must remain available for maintenance.
+### Technician Maintenance Access
 
-Applying system configuration will normally require administrator privileges.
+* **`Ctrl+Alt+Delete`** remains the standard technician escape route to the Windows security screen.
+* From the Windows security screen, a technician can switch user or sign in to the separate **Administrator** account for maintenance.
+* The Administrator account retains the normal Windows shell (`explorer.exe`) and full system access.
+* Applying system configuration will require running `ExhibitOSManager.exe` as Administrator (elevated).
 
 ---
 
-# 5. Exhibition Schedule
+## 5. Exhibition Schedule & Power Management
 
 Allow configuration of daily:
 
-* opening time
-* closing time
-* morning reboot time
+* opening time (e.g. `07:00`)
+* closing time (e.g. `20:00`)
+* morning reboot time (e.g. `06:45`)
+* overnight power mode
 
-Typical configuration:
-
-```text
-Restart: 06:45
-Open:    07:00
-Close:   20:00
-```
+### Daytime Operation
 
 During exhibition hours:
 
-* artwork should be running
-* display should remain active
-* screensaver should not activate
-* automatic sleep should not interrupt the work
+* artwork is running fullscreen
+* display remains active
+* screensaver and automatic sleep are prevented using the Win32 API:
+  `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED)`
+* no global Windows power plan is permanently corrupted; execution flags are maintained continuously by the watchdog process
 
-Outside exhibition hours:
+### Overnight Power Modes
 
-* artwork does not need to run
-* display should be turned off and/or the computer put into an appropriate low-power state
+Support three configurable overnight power policies:
 
-Perform a scheduled reboot before opening each day so the exhibition starts from a clean state.
+1. **Sleep with Wake Timers (Default)**:
+   * At closing time, the PC enters sleep. A scheduled wake timer is registered to wake the machine shortly before the scheduled morning reboot.
+   * **Missed Reboot Fallback**: Because hardware wake timers on mini-PCs can occasionally fail, on-site technicians commonly press the power button in the morning when unlocking gallery doors. If the PC is manually woken from sleep **after its scheduled morning reboot time** (e.g., scheduled reboot was `06:45`, tech woke the PC at `08:00`), the watchdog immediately detects the missed morning reboot and triggers a clean system reboot before launching the artwork.
+2. **Shutdown**:
+   * At closing time, the PC performs a clean shutdown.
+   * Designed for installations where sleep is unreliable and on-site technicians reliably turn on the PCs in the morning via power buttons or master breaker switches.
+3. **Idle**:
+   * At closing time, the PC remains powered on overnight, stopping artwork processes and applying the configured overnight display behavior (signal off or blackout).
+   * In the morning at the scheduled reboot time, the PC performs a clean reboot and starts the artwork.
+   * Guarantees 100% unattended morning startup without relying on sleep/wake hardware support.
 
-Choose a robust approach to overnight power management. Do not depend on sleep/wake behavior if it proves unreliable across typical mini-PC hardware.
+### Scheduled Morning Reboot
 
-Complicated calendars and date-range scheduling are not required initially.
-
----
-
-# 6. Networking
-
-Provide three modes.
-
-## Offline Exhibition
-
-Default and recommended.
-
-Disable external networking during exhibition operation.
-
-Disable Wi-Fi and Ethernet as appropriate while retaining localhost/loopback functionality.
-
-## Internet Enabled
-
-Leave networking available normally.
-
-Used by artworks that require Internet connectivity.
-
-## Local Network Only
-
-Permit LAN communication while preventing Internet access.
-
-This supports installations involving multiple local machines, OSC/networked devices, local servers, etc.
-
-Networking restrictions are partly intended to reduce unwanted Windows/application updates and other Internet-dependent behavior during exhibitions.
+A daily morning reboot is scheduled via Windows Task Scheduler (running as `SYSTEM` with `shutdown /r /t 0 /f`) before opening hours, ensuring the PC starts from a fresh state and eliminating memory leaks or driver degradation.
 
 ---
 
-# 7. Windows Exhibition Configuration
+## 6. Networking
 
-Configure Windows appropriately for unattended exhibition use.
+Provide three networking modes configured via the **Windows Filtering Platform (WFP) / Windows Firewall**, rather than disabling network adapters. This avoids driver re-enumeration, maintains device stability, and guarantees loopback networking (`127.0.0.1`, `::1`).
 
-This includes, where appropriate:
+### Offline Exhibition (Default & Recommended)
 
-* artwork-account auto-login
-* kiosk/restricted-user configuration
-* automatic artwork startup
-* disabling screensaver
-* preventing sleep during exhibition hours
-* suppressing disruptive notifications
-* preventing unwanted Windows UI appearing over artwork
-* preventing automatic update/restart behavior from interrupting exhibition hours
-* appropriate display power behavior
-* configured networking restrictions
+* Block all outbound and inbound traffic via Windows Firewall rules, **except loopback** (`127.0.0.1`, `::1`).
+* Retains complete local inter-process communication (browser to localhost Node server) while preventing internet access, external probing, and disruptive background updates.
 
-Avoid unnecessary system modifications.
+### Local Network Only
 
-Keep Windows-specific provisioning isolated from general application logic.
+* Allow inbound and outbound traffic within the local subnet and private IP ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`).
+* Block all outbound traffic to public internet addresses.
+* Supports multi-machine installations, networked sensor arrays, OSC controllers, and local media servers without internet exposure.
+
+### Internet Enabled
+
+* Normal networking rules apply.
+* Used exclusively by artworks that require live external internet connectivity.
 
 ---
 
-# 8. Runtime and Reliability
+## 7. Windows Exhibition Configuration
 
-Artwork PC Manager should assume installations may operate unattended for weeks.
+Windows configuration is applied idempotently by `ExhibitOSManager.exe` running elevated:
 
-Provide a runtime/watchdog responsible for maintaining the required artwork state.
+* creation of the passwordless `ArtworkUser` account
+* configuration of `AutoAdminLogon` for `ArtworkUser`
+* setting the custom user shell (`ExhibitWatchdog.exe`) for `ArtworkUser`
+* creation of Windows Task Scheduler tasks for scheduled reboot
+* application of Windows Firewall rules matching the selected networking mode
+* suppression of Windows Error Reporting dialogs and disruptive notifications
+* disabling Windows Update restart interruptions during exhibition hours
+* setting display power and screensaver policies
 
-For example:
+Windows-specific provisioning code is strictly isolated from application logic. Reapplying configuration converges on the desired state without creating duplicates.
+
+---
+
+## 8. Runtime, Reliability & Process Supervision
+
+Artwork PC Manager assumes installations may operate unattended for weeks.
+
+### Windows Job Objects
+
+`ExhibitWatchdog.exe` runs inside the `ArtworkUser` session as the custom shell. All supervised artwork child processes (`mpv.exe`, `node.exe`, `msedge.exe`, or custom application executables) are assigned to a **Windows Job Object** configured with:
+
+```csharp
+JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+```
+
+When an artwork exits, needs restarting, or closes at the end of the day, terminating the Job Object guarantees atomic destruction of the entire process tree, preventing orphaned background processes from lingering or locking resources.
+
+### Supervision Architecture
 
 ```text
-Static Web Artwork
-    ├── static web server
-    └── kiosk browser
+Static Web Artwork:
+    Job Object
+    ├── node.exe (bundled static server on localhost)
+    └── msedge.exe (kiosk browser pointing to localhost)
 
-Backend Web Artwork
-    ├── artwork Node backend
-    └── kiosk browser
+Backend Web Artwork:
+    Job Object
+    ├── node.exe (artwork server.js)
+    └── [Readiness check: HTTP poll until responsive]
+        └── msedge.exe (kiosk browser)
 
-Video Folder
-    └── video player
+Video Folder:
+    Job Object
+    └── mpv.exe (standalone player)
 
-Application
+Application:
+    Job Object
     └── artwork executable
 ```
 
-If a required process exits unexpectedly, attempt to restart it.
+### Recovery & Health Checks
 
-For Web Artworks, ensure the server/backend is ready before launching or reloading the browser.
-
-If repeated recovery attempts fail, rebooting the machine may be used as a last-resort recovery strategy.
-
-Avoid creating unrecoverable restart loops.
-
-Maintain useful logs.
+* If a supervised artwork process exits unexpectedly during exhibition hours, the watchdog attempts to restart it.
+* Exponential backoff and maximum retry thresholds prevent unrecoverable crash loops.
+* For Web Artworks, the watchdog verifies the HTTP server is responsive before launching or reloading the browser.
+* All lifecycle events, process starts, exits, and crash attempts are logged to `C:\ExhibitOS\logs\watchdog.log`.
 
 ---
 
-# 9. Setup Interface
+## 9. Setup Interface (WinUI 3)
 
-Use a simple wizard designed for non-experts.
+The setup interface (`ExhibitOSManager.exe`) is a simple, modern wizard built with **WinUI 3** designed for non-experts.
 
-Avoid exposing implementation terminology such as Assigned Access, Kestrel, Node processes, scheduled tasks, registry keys, etc. during normal use.
+Implementation terminology (Winlogon keys, Job Objects, firewall rules, WFP filters) is hidden behind clear, user-focused language.
 
-## Step 1 — Artwork
+### Step 1 — Artwork
 
-Ask:
-
-**What should this computer run?**
+Ask: **What should this computer run?**
 
 Options:
+* **Video Folder**
+* **Web Artwork**
+* **Application**
 
-* Video Folder
-* Web Artwork
-* Application
+Select artwork folder. Automatically inspect and provide immediate feedback:
+* `✓ Found 4 video files (mp4, mkv)`
+* `✓ Web artwork detected (Static)`
+* `✓ Web artwork with Node backend detected`
+* `✓ Executable found: ExhibitionWork.exe`
+* `✗ No video files found in selected folder`
+* `✗ No index.html or server.js found`
 
-Select the artwork folder.
-
-Validate it and provide simple feedback.
-
-Examples:
-
-```text
-✓ Found 6 videos
-```
-
-```text
-✓ Web artwork detected
-```
-
-```text
-✓ Web artwork with backend detected
-```
-
-```text
-✗ No web entry point could be found
-```
-
-Where practical, determine automatically whether a Web Artwork is static or backend-enabled rather than requiring the producer to understand the distinction.
-
-For Application artworks, allow executable selection where necessary.
-
----
-
-## Step 2 — Exhibition
+### Step 2 — Exhibition
 
 Configure:
+* **Opening time** (default `07:00`)
+* **Closing time** (default `20:00`)
+* **Morning reboot time** (default `06:45`)
+* **Overnight Power Mode**:
+  * *Sleep with Wake Timers* (Recommended)
+  * *Shutdown*
+  * *Idle*
+* **Networking Mode**:
+  * *Offline Exhibition* (Default)
+  * *Local Network Only*
+  * *Internet Enabled*
 
-* opening time
-* closing time
-* morning reboot time
-* networking mode
+### Step 3 — Display & Sound
 
-Default networking mode:
+Configure:
+* **Display Selection**: Automatic (primary) or specific connected display
+* **Audio Output Device**: Enumerate available audio endpoints (HDMI, 3.5mm, USB audio) and allow explicit device selection so audio is not lost after reboot
+* **Cursor Visibility**: Hide or Show
+* **Overnight Display Behavior**:
+  * *Signal Off (DPMS)*: Cuts display output via `WM_SYSCOMMAND / SC_MONITORPOWER`
+  * *Blackout Screen*: Renders a fullscreen borderless pure black window and mutes audio, keeping the HDMI signal active so gallery projectors and monitors do not shut off or show "No Signal" banners
 
-**Offline Exhibition**
+### Step 4 — Test
 
-Use sensible defaults.
+Provide **Test Artwork** before committing system-level configuration:
+* Launches the artwork in a windowed or temporary fullscreen test environment
+* For Video: verifies player launch, video decoding, and audio playback
+* For Static Web: starts local static server and opens Edge
+* For Backend Web: starts backend with bundled Node, waits for readiness probe, and opens Edge
+* For Application: launches executable and monitors exit code
+* Displays clear diagnostic results with actionable error messages
 
----
+### Step 5 — Configure
 
-## Step 3 — Display & Sound
+Show a clear summary:
+* Selected artwork and type
+* Schedule and power mode
+* Networking and audio configuration
 
-Keep this simple.
+Action: **Configure This PC for Exhibition**
 
-At minimum consider:
+Copies artwork files, writes `C:\ExhibitOS\config\exhibition.json`, provisions `ArtworkUser`, configures custom shell, creates Task Scheduler jobs, and configures firewall rules.
 
-* display selection, default Automatic
-* volume
-* fullscreen behavior
-* cursor visibility
-
-Artwork-specific settings should generally use sensible defaults.
-
-Unusual options can live under **Advanced**.
-
----
-
-## Step 4 — Test
-
-Provide **Test Artwork** before committing system-level configuration.
-
-Testing should run the artwork approximately as it will operate during the exhibition without first requiring the PC to enter the restricted kiosk environment.
-
-Validate relevant components.
-
-Examples:
-
-### Video
-
-* files readable
-* video player launches
-* playback starts
-* display available
-* audio device available where relevant
-
-### Static Web
-
-* local server starts
-* artwork responds
-* browser launches
-
-### Backend Web
-
-* Node runtime available
-* backend launches
-* backend reaches ready state
-* configured localhost page responds
-* browser launches
-
-### Application
-
-* executable exists
-* application launches
-
-Report failures in language useful to a non-expert, while retaining detailed logs for technicians/developers.
+After completion, prompt: **Restart and Enter Exhibition Mode**.
 
 ---
 
-## Step 5 — Configure
+## 10. Maintenance Interface
 
-Show a concise summary and:
-
-**Configure This PC for Exhibition**
-
-Apply the required:
-
-* artwork installation
-* runtime dependencies
-* Windows configuration
-* artwork account
-* kiosk environment
-* scheduling
-* startup behavior
-* networking configuration
-* watchdog/runtime
-
-After completion provide:
-
-**Restart and Test**
-
-After reboot, the machine should behave as it will during the actual exhibition.
-
----
-
-# 10. Maintenance Interface
-
-When Artwork PC Manager is opened by an administrator on an already-configured PC, show a simple maintenance/status screen rather than the initial setup wizard.
-
-For example:
+When `ExhibitOSManager.exe` is launched on an already-configured PC by an Administrator, display the **Maintenance Dashboard** instead of the setup wizard:
 
 ```text
-ARTWORK PC
+EXHIBIT OS
 
-● READY
+● READY FOR EXHIBITION
 
-Artwork: Bergen Rain
-Type: Web Artwork
-Status: Running
+Artwork: Bergen Rain (Web Artwork with Backend)
+Status: Active (within exhibition hours)
+Schedule: 07:00 – 20:00
+Overnight: Sleep (Missed-reboot fallback active)
+Network: Offline Exhibition
+Audio: Line Out (Realtek High Definition Audio)
 
-Schedule: 07:00–20:00
-Network: Offline
-Next restart: 06:45 tomorrow
-
-[ Launch Artwork ]
+[ Launch / Test Artwork ]
 [ Stop Artwork ]
-[ Restart Artwork ]
+[ Run System Diagnostic ]
 
 [ Edit Configuration ]
-[ Run System Test ]
+[ Restore PC to Normal Use ]
 ```
 
-The exact UI is flexible.
-
-The goal is that an exhibition technician can quickly understand whether the computer is correctly configured and operating.
+Technicians can immediately check operational status, trigger tests, or edit configuration.
 
 ---
 
-# 11. Exhibition Readiness Test
+## 11. Exhibition Readiness Test
 
-Provide **Run System Test**.
+The **Run System Diagnostic** button checks:
 
-Check whatever is relevant to the configured artwork, including:
+* Artwork files present in `C:\ExhibitOS\artwork`
+* Bundled runtimes present (`mpv.exe`, `node.exe`)
+* Backend entry point and `node_modules` present (where applicable)
+* Backend readiness probe succeeds
+* `ArtworkUser` account exists and passwordless logon is configured
+* Custom shell registry key is correctly pointing to `ExhibitWatchdog.exe`
+* Windows Firewall rules correctly enforce the selected networking mode
+* Selected audio playback device is connected and available
+* Scheduled reboot task is registered in Task Scheduler
+* Log files are writable
 
-* artwork files available
-* required runtime available
-* artwork launches
-* browser/player/application available
-* backend starts where applicable
-* startup configuration exists
-* artwork account exists
-* kiosk configuration exists
-* watchdog/runtime functioning
-* schedule configured
-* networking state correct
-* screensaver/sleep configuration correct
-* display detected
-* audio device detected where relevant
-
-Present a clear result:
-
-**READY FOR EXHIBITION**
-
-or:
-
-**PROBLEMS FOUND**
-
-Provide actionable descriptions of failures.
-
-Detailed technical information can be available separately.
+Result displayed clearly:
+**READY FOR EXHIBITION** or **PROBLEMS DETECTED** (with clear repair instructions).
 
 ---
 
-# 12. Reconfiguration and Removal
+## 12. Reconfiguration and Removal
 
-Support changing an existing installation.
+Provide an administrator action: **Restore PC to Normal Use**.
 
-For example:
-
-* replace artwork
-* change artwork type
-* change exhibition hours
-* change networking mode
-* change display/sound settings
-
-Provide an administrator action to:
-
-**Restore PC to Normal Use**
-
-Undo system modifications made by Artwork PC Manager where reasonably possible.
-
-Do not assume uninstalling the application itself is sufficient.
+This cleanly reverses all modifications:
+* Restores default Windows shell (`explorer.exe`) for all users
+* Removes custom firewall rules
+* Disables `AutoAdminLogon`
+* Removes scheduled Task Scheduler reboot jobs
+* Optionally deletes or disables the `ArtworkUser` account
+* Restores normal Windows power and notification settings
 
 ---
 
-# 13. Developer Mode
-
-Most development and integration testing will happen in disposable Windows virtual machines.
-
-Provide useful developer/testing capabilities such as:
-
-* simulate exhibition opening
-* simulate exhibition closing
-* simulate morning startup
-* start/stop runtime
-* deliberately terminate artwork processes to test recovery
-* inspect watchdog state
-* inspect effective configuration
-* inspect logs
-
-Developer features should not clutter the normal interface.
-
----
-
-# 14. Architecture
-
-Separate **desired state** from **Windows provisioning**.
-
-Conceptually:
+## 13. Architecture & Tech Stack
 
 ```text
-Artwork:
-    type: web
-    mode: backend
-    path: ...
-
-Schedule:
-    open: 07:00
-    close: 20:00
-    reboot: 06:45
-
-Network:
-    mode: offline
+                         ExhibitOSManager.exe
+                        (WinUI 3 / C# Admin App)
+                                   │
+                                   ▼
+                       C:\ExhibitOS\config\exhibition.json
+                                   │
+              ┌────────────────────┴────────────────────┐
+              ▼                                         ▼
+   Windows Provisioning (Admin)               Artwork Session (ArtworkUser)
+   • Create ArtworkUser (no pwd)              • AutoAdminLogon
+   • Register Custom Shell                    • Winlogon Shell:
+   • Task Scheduler Reboot                        ExhibitWatchdog.exe
+   • WFP / Firewall Rules                               │
+                                                        ▼
+                                               Windows Job Object
+                                             ┌──────────┼──────────┐
+                                             ▼          ▼          ▼
+                                          mpv.exe   node.exe   App.exe
+                                                        │
+                                                 [HTTP Ready?]
+                                                        │
+                                                        ▼
+                                                   msedge.exe
 ```
 
-The exact configuration format is an implementation decision.
+### Component Details
 
-Windows provisioning should make the computer conform to that desired state.
-
-Prefer idempotent configuration operations where practical. Reapplying configuration should converge on the requested state rather than creating duplicate accounts, tasks, services, startup entries, etc.
-
-Keep these responsibilities conceptually separate:
-
-```text
-Management UI
-      │
-      ▼
-Configuration / Desired State
-      │
-      ├──────────────► Windows Provisioning
-      │
-      └──────────────► Artwork Runtime / Watchdog
-                              │
-             ┌────────────────┼────────────────┐
-             ▼                ▼                ▼
-         Video Player      Web Runtime     Application
-                              │
-                       ┌──────┴──────┐
-                       ▼             ▼
-                    Static       Artwork Node
-                    Server         Backend
-```
-
-Exact process boundaries and implementation technologies are flexible.
+1. **`ExhibitOSManager.exe`**:
+   * Windows desktop app built with **C# / .NET 8 or 9** and **WinUI 3**.
+   * Packaged as a self-contained executable.
+   * Runs elevated with administrator privileges for setup, testing, and maintenance.
+2. **`ExhibitWatchdog.exe`**:
+   * Lightweight, headless C# executable running in the `ArtworkUser` session.
+   * Configured as the custom Winlogon shell.
+   * Manages `SetThreadExecutionState`, enforces exhibition hours, controls Job Objects, and monitors artwork health.
+3. **`exhibition.json`**:
+   * Declarative desired state configuration file stored in `C:\ExhibitOS\config\exhibition.json`.
+4. **Bundled Runtimes**:
+   * Pinned Node.js LTS portable build in `runtime/bin/node/`.
+   * Pinned `mpv` standalone build in `runtime/bin/mpv/`.
+   * System **Microsoft Edge** in kiosk mode for web rendering.
 
 ---
 
-# 15. Backend Web Artwork Boundary
+## 14. Development and Testing
 
-This architectural boundary is important.
-
-**Artwork PC Manager owns infrastructure and lifecycle.**
-
-It is responsible for:
-
-* providing the supported Node runtime
-* launching the artwork backend
-* stopping it
-* monitoring it
-* restarting it
-* determining when it is ready
-* opening the browser
-* managing exhibition scheduling
-
-**The artwork owns behavior.**
-
-Its backend is responsible for whatever that artwork specifically needs:
-
-* API endpoints
-* printing logic
-* native/system calls
-* hardware communication
-* network communication
-* data processing
-* filesystem operations
-* other artwork-specific functionality
-
-Do not add artwork-specific behavior to Artwork PC Manager.
-
-Do not attempt to design a universal API covering anticipated artwork requirements.
-
-If a future artwork requires unusual functionality, implement that functionality in that artwork's backend.
-
-Because these backend modifications are prepared by exhibition technical staff rather than arbitrary visitors, we do not need to build a general-purpose sandbox/plugin system for backend artwork code.
-
----
-
-# 16. Development and Testing
-
-Use disposable Windows 11 virtual machines with clean snapshots/checkpoints as the primary integration environment.
-
-Typical development cycle:
-
-1. restore clean Windows VM
-2. install/run Artwork PC Manager
-3. configure artwork
-4. reboot
-5. verify auto-login
-6. verify artwork startup
-7. test visitor restrictions
-8. test Ctrl+Alt+Delete technician escape
-9. test process crashes/recovery
-10. test schedule behavior
-11. test networking modes
-12. test restoration/removal
-13. revert VM
-
-Do not perform destructive Windows configuration testing against the developer's normal workstation unless explicitly intended.
-
-Eventually validate on physical exhibition mini-PC hardware, particularly for:
-
-* HDMI/projector behavior
-* display detection
-* audio devices
-* GPU/video decoding
-* USB peripherals
-* printers
-* hardware used by backend artworks
-* BIOS behavior
-* power-loss recovery
-* display power management
-* sleep/wake behavior
-
----
-
-# 17. Scope
-
-Prioritize:
-
-1. reliability during exhibitions
-2. preventing visitor access to Windows
-3. ease of use for non-experts
-4. automatic recovery
-5. maintainability/testability
-6. minimal complexity
-
-The initial version does not need:
-
-* configuration export/import
-* cloud management
-* fleet management
-* remote dashboards
-* complicated calendars
-* application user accounts
-* telemetry infrastructure
-* plugin systems
-* generic native APIs for browser artworks
-* support for arbitrary backend runtimes
-
-Do not add features simply because they might eventually be useful.
-
-When this specification leaves an implementation detail open, investigate the available Windows mechanisms and choose the simplest robust solution.
-
-Before beginning substantial implementation, review the requirements, investigate the relevant current Windows APIs/capabilities, and propose a concise architecture and implementation plan. Flag any requirements that conflict with Windows limitations or that would materially complicate reliability. Do not over-engineer around hypothetical future requirements.
-
-The core objective remains:
-
-> **Take a Windows mini-PC, point Artwork PC Manager at an artwork, and make that PC reliably behave like a dedicated exhibition appliance.**
+* Primary testing in disposable **Windows 11 virtual machines** with clean snapshots.
+* Verify:
+  1. Automated setup and idempotent re-provisioning
+  2. Auto-login into `ArtworkUser` without password prompt
+  3. Custom shell launches watchdog without `explorer.exe` (no taskbar, no start menu)
+  4. `Ctrl+Alt+Delete` allows switching back to Admin
+  5. Process tree termination via Job Objects (killing watchdog terminates Edge + Node cleanly)
+  6. Missed morning reboot fallback after manual wake from sleep
+  7. Offline firewall rules block internet while preserving `localhost`
+  8. Full restoration to normal PC state
+* Physical mini-PC hardware verification for HDMI audio routing, projector blackout behavior, and sleep/wake timers.
