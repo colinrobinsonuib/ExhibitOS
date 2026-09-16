@@ -49,11 +49,19 @@ const MIME_TYPES = {
 
 const server = http.createServer((req, res) => {
   const parsedUrl = url.parse(req.url);
-  let pathname = decodeURIComponent(parsedUrl.pathname);
+  let pathname;
+  try {
+    pathname = decodeURIComponent(parsedUrl.pathname);
+  } catch {
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    res.end('400 Bad Request');
+    return;
+  }
 
   // Normalize path to prevent directory traversal
-  let safePath = path.normalize(path.join(baseDir, pathname));
-  if (!safePath.startsWith(baseDir)) {
+  let safePath = path.resolve(baseDir, `.${pathname}`);
+  const relativePath = path.relative(baseDir, safePath);
+  if (relativePath.startsWith('..' + path.sep) || path.isAbsolute(relativePath)) {
     res.writeHead(403, { 'Content-Type': 'text/plain' });
     res.end('403 Forbidden');
     return;

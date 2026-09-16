@@ -31,7 +31,7 @@ public class ExhibitionConfigTests
                 HideCursor = true,
                 OvernightDisplayBehavior = OvernightDisplayBehavior.SignalOff
             },
-            NetworkingMode = NetworkingMode.OfflineExhibition
+            NetworkingMode = NetworkingMode.LocalhostOnly
         };
 
         var json = config.ToJson();
@@ -45,7 +45,16 @@ public class ExhibitionConfigTests
         Assert.Equal("08:00", deserialized.Schedule.OpeningTime);
         Assert.Equal("19:30", deserialized.Schedule.ClosingTime);
         Assert.Equal(OvernightPowerMode.SleepWithWakeTimers, deserialized.Schedule.OvernightPowerMode);
-        Assert.Equal(NetworkingMode.OfflineExhibition, deserialized.NetworkingMode);
+        Assert.Equal(NetworkingMode.LocalhostOnly, deserialized.NetworkingMode);
+    }
+
+    [Theory]
+    [InlineData("OfflineExhibition")]
+    [InlineData("LocalNetworkOnly")]
+    public void ExhibitionConfig_MigratesLegacyNetworkModes(string legacyMode)
+    {
+        var config = ExhibitionConfig.FromJson($$"""{"networkingMode":"{{legacyMode}}"}""");
+        Assert.Equal(NetworkingMode.LocalhostOnly, config.NetworkingMode);
     }
 
     [Fact]

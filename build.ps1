@@ -58,6 +58,6 @@ Write-Host "`n[3/3] Publishing distribution bundle to dist/..." -ForegroundColor
 
 Write-Host "`n=======================================================" -ForegroundColor Green
 Write-Host "✓ Fresh build succeeded!" -ForegroundColor Green
-Write-Host "Output bundle: $root\dist" -ForegroundColor Green
-Write-Host "To create installer: compile installer\ExhibitOSSetup.iss with Inno Setup." -ForegroundColor Cyan
+Write-Host "Single-file target installer: $root\dist-installer\ExhibitOSSetup.exe" -ForegroundColor Green
+Write-Host "Expanded installation tree (for diagnostics): $root\dist" -ForegroundColor Cyan
 Write-Host "=======================================================" -ForegroundColor Green

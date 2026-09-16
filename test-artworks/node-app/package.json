@@ -1,0 +1,18 @@
+{
+  "name": "pulse-telemetry-artwork",
+  "version": "1.0.0",
+  "description": "ExhibitOS Backend Web Test Artwork - Living System with Real-Time Telemetry & Interaction Stream",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "exhibitos",
+    "artwork",
+    "interactive",
+    "telemetry",
+    "kiosk"
+  ],
+  "author": "ExhibitOS Development Team",
+  "license": "MIT"
+}

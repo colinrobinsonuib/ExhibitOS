@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Pulse & Telemetry // Living System (ExhibitOS Backend Artwork)</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <canvas id="stage"></canvas>
+
+  <div class="kiosk-container">
+    <!-- Top Left: Title & Artwork Identity -->
+    <header class="artwork-header">
+      <div class="badge-row">
+        <span class="badge badge-node">Node.js Backend</span>
+        <span class="badge badge-live"><span class="pulse-dot"></span> LIVE TELEMETRY</span>
+      </div>
+      <h1 class="artwork-title">Pulse & Telemetry</h1>
+      <p class="artwork-subtitle">Living Biomorphic Network & Real-Time Event Bus</p>
+    </header>
+
+    <!-- Top Right: Telemetry Readout Grid -->
+    <section class="telemetry-panel">
+      <div class="telemetry-card">
+        <span class="card-label">Server Endpoint</span>
+        <span id="tel-endpoint" class="card-value">127.0.0.1:----</span>
+      </div>
+      <div class="telemetry-card">
+        <span class="card-label">Backend Uptime</span>
+        <span id="tel-uptime" class="card-value">00:00:00</span>
+      </div>
+      <div class="telemetry-card">
+        <span class="card-label">Memory Heap</span>
+        <span id="tel-memory" class="card-value">-- MB</span>
+      </div>
+      <div class="telemetry-card">
+        <span class="card-label">Heartbeat Ping</span>
+        <span id="tel-latency" class="card-value">-- ms</span>
+      </div>
+    </section>
+
+    <!-- Bottom Left: Interactive Controls -->
+    <section class="controls-panel">
+      <div class="controls-header">Interactive Resonance</div>
+      <div class="button-group">
+        <button id="btn-pulse" class="action-btn btn-primary">
+          <span class="btn-icon">⚡</span> Send Neural Pulse
+        </button>
+        <button id="btn-invert" class="action-btn btn-secondary">
+          <span class="btn-icon">◈</span> Shift Geometry
+        </button>
+        <button id="btn-note" class="action-btn btn-secondary">
+          <span class="btn-icon">♫</span> Drop Resonance Note
+        </button>
+      </div>
+      <div class="controls-hint">Touch canvas to plant interactive nodes &bull; Real-time sync via Server-Sent Events</div>
+    </section>
+
+    <!-- Bottom Right: Live Event Log Stream -->
+    <section class="log-panel">
+      <div class="log-header">
+        <span>Event Stream</span>
+        <span id="log-count" class="log-counter">0 events</span>
+      </div>
+      <div id="log-stream" class="log-stream"></div>
+    </section>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

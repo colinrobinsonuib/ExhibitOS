@@ -1,10 +1,11 @@
 using ExhibitOS.Core.Configuration;
+using ExhibitOS.Core.Browsers;
 
 namespace ExhibitOS.Core.Inspection;
 
 public class ArtworkInspectionResult
 {
-    public ArtworkType DetectedType { get; set; }
+    public ArtworkType? DetectedType { get; set; }
     public bool HasFiles { get; set; }
     public List<string> Messages { get; set; } = new();
     public List<string> Errors { get; set; } = new();
@@ -90,12 +91,6 @@ public static class ArtworkInspector
 
     public static bool IsEdgeInstalled()
     {
-        var possiblePaths = new[]
-        {
-            @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-            @"C:\Program Files\Microsoft\Edge\Application\msedge.exe"
-        };
-
-        return possiblePaths.Any(File.Exists);
+        return EdgeLocator.FindInstalledEdge() is not null;
     }
 }

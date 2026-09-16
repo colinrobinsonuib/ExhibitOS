@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/ExhibitOS.Bootstrapper/ExhibitOS.Bootstrapper.csproj" />
     <Project Path="src/ExhibitOS.Core/ExhibitOS.Core.csproj" />
     <Project Path="src/ExhibitOS.Provisioning/ExhibitOS.Provisioning.csproj" />
     <Project Path="src/ExhibitOSManager/ExhibitOSManager.csproj">

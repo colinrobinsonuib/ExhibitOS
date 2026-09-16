@@ -29,7 +29,24 @@ public partial class App : Application
     /// </summary>
     public App()
     {
-        InitializeComponent();
+        ManagerStartupLogger.Log($"Manager process started. Version={typeof(App).Assembly.GetName().Version}; BaseDirectory={AppContext.BaseDirectory}; OS={Environment.OSVersion}");
+        AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) =>
+            ManagerStartupLogger.Log("Unhandled AppDomain exception.", eventArgs.ExceptionObject as Exception);
+        TaskScheduler.UnobservedTaskException += (_, eventArgs) =>
+            ManagerStartupLogger.Log("Unobserved task exception.", eventArgs.Exception);
+
+        try
+        {
+            InitializeComponent();
+            UnhandledException += (_, eventArgs) =>
+                ManagerStartupLogger.Log("Unhandled WinUI exception.", eventArgs.Exception);
+            ManagerStartupLogger.Log("Application resources initialized.");
+        }
+        catch (Exception ex)
+        {
+            ManagerStartupLogger.ShowFatalError("application resource initialization", ex);
+            throw;
+        }
     }
 
     /// <summary>
@@ -38,7 +55,18 @@ public partial class App : Application
     /// <param name="args">Details about the launch request and process.</param>
     protected override void OnLaunched(Microsoft.UI.Xaml.LaunchActivatedEventArgs args)
     {
-        _window = new MainWindow();
-        _window.Activate();
+        try
+        {
+            ManagerStartupLogger.Log("Creating the main window.");
+            _window = new MainWindow();
+            ManagerStartupLogger.Log("Activating the main window.");
+            _window.Activate();
+            ManagerStartupLogger.Log("Main window activated successfully.");
+        }
+        catch (Exception ex)
+        {
+            ManagerStartupLogger.ShowFatalError("main window creation", ex);
+            throw;
+        }
     }
 }

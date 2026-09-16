@@ -10,4 +10,8 @@
     <ProjectReference Include="..\ExhibitOS.Core\ExhibitOS.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="ExhibitOS.Core.Tests" />
+  </ItemGroup>
+
 </Project>

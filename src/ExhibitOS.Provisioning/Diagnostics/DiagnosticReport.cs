@@ -1,9 +1,18 @@
 namespace ExhibitOS.Provisioning.Diagnostics;
 
+public enum DiagnosticState
+{
+    Confirmed,
+    Missing,
+    Error,
+    NotApplicable
+}
+
 public class DiagnosticItem
 {
     public string Name { get; set; } = string.Empty;
-    public bool Passed { get; set; }
+    public DiagnosticState State { get; set; }
+    public bool Passed => State is DiagnosticState.Confirmed or DiagnosticState.NotApplicable;
     public string Message { get; set; } = string.Empty;
     public string? RepairInstruction { get; set; }
 }
@@ -18,7 +27,18 @@ public class DiagnosticReport
         Items.Add(new DiagnosticItem
         {
             Name = name,
-            Passed = passed,
+            State = passed ? DiagnosticState.Confirmed : DiagnosticState.Missing,
+            Message = message,
+            RepairInstruction = repairInstruction
+        });
+    }
+
+    public void Add(string name, DiagnosticState state, string message, string? repairInstruction = null)
+    {
+        Items.Add(new DiagnosticItem
+        {
+            Name = name,
+            State = state,
             Message = message,
             RepairInstruction = repairInstruction
         });

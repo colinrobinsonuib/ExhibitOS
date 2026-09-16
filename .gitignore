@@ -2,12 +2,41 @@
 test-environment/virtualbox/
 vbox/
 
-# Build and IDE artifacts
-bin/
-obj/
+# .NET build, test, and coverage artifacts
+[Bb]in/
+[Oo]bj/
+artifacts/
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+coverage/
+
+# IDE and user-specific files
 .vs/
+.vscode/
+.idea/
 *.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Local logs and interrupted installer files
+*.log
+*.tmp
+*.installing
+
 # Staged runtimes and distribution packages
-runtime/bin/**/*.exe
 dist/
 dist-installer/
+
+# Test artwork media & runtime data (development only, not in repo)
+test-artworks/**/*.mp4
+test-artworks/**/*.mkv
+test-artworks/**/*.mov
+test-artworks/**/*.avi
+test-artworks/**/*.webm
+test-artworks/**/*.m4v
+test-artworks/**/node_modules/
+test-artworks/**/data/*.json
+!test-artworks/**/data/.gitkeep

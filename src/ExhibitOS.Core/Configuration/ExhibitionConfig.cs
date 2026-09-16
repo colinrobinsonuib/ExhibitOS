@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using System.Text.Json.Nodes;
 
 namespace ExhibitOS.Core.Configuration;
 
@@ -29,8 +30,7 @@ public enum OvernightDisplayBehavior
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum NetworkingMode
 {
-    OfflineExhibition,
-    LocalNetworkOnly,
+    LocalhostOnly,
     InternetEnabled
 }
 
@@ -66,7 +66,7 @@ public class ExhibitionConfig
     public ArtworkConfig Artwork { get; set; } = new();
     public ScheduleConfig Schedule { get; set; } = new();
     public DisplaySoundConfig DisplayAndSound { get; set; } = new();
-    public NetworkingMode NetworkingMode { get; set; } = NetworkingMode.OfflineExhibition;
+    public NetworkingMode NetworkingMode { get; set; } = NetworkingMode.LocalhostOnly;
 
     public static readonly System.Text.Json.JsonSerializerOptions DefaultJsonOptions = new()
     {
@@ -83,6 +83,18 @@ public class ExhibitionConfig
 
     public static ExhibitionConfig FromJson(string json)
     {
+        // Migrate configurations written before networking was simplified to
+        // localhost-only versus internet access.
+        var node = JsonNode.Parse(json);
+        if (node is JsonObject root && root["networkingMode"] is JsonValue value &&
+            value.TryGetValue<string>(out var legacyMode) &&
+            (string.Equals(legacyMode, "OfflineExhibition", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(legacyMode, "LocalNetworkOnly", StringComparison.OrdinalIgnoreCase)))
+        {
+            root["networkingMode"] = nameof(NetworkingMode.LocalhostOnly);
+            json = root.ToJsonString();
+        }
+
         return System.Text.Json.JsonSerializer.Deserialize<ExhibitionConfig>(json, DefaultJsonOptions)
                ?? throw new System.Text.Json.JsonException("Deserialized exhibition configuration was null.");
     }

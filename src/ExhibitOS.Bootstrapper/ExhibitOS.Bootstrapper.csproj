@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <AssemblyName>ExhibitOSSetup</AssemblyName>
+    <RootNamespace>ExhibitOS.Bootstrapper</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <DebugType>None</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(PayloadPath)' != '' and Exists('$(PayloadPath)')">
+    <EmbeddedResource Include="$(PayloadPath)" LogicalName="ExhibitOSPayload.zip" />
+  </ItemGroup>
+</Project>

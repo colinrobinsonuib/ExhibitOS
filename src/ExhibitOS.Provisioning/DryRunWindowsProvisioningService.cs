@@ -51,6 +51,15 @@ public class DryRunWindowsProvisioningService : IWindowsProvisioningService
         return Task.FromResult(ProvisioningResult.Ok($"[Dry Run] Scheduled reboot task configured for '{rebootTime:HH:mm}'.", new[] { $"Reboot task at {rebootTime:HH:mm}" }, isDryRun: true));
     }
 
+    public Task<ProvisioningResult> ConfigureClosingPowerTaskAsync(ExhibitionConfig config, ExhibitionPaths paths, CancellationToken ct = default)
+    {
+        Record($"Create daily Task Scheduler closing-power task for '{config.Schedule.ClosingTime}' ({config.Schedule.OvernightPowerMode})");
+        return Task.FromResult(ProvisioningResult.Ok(
+            $"[Dry Run] Closing-power task would be configured for {config.Schedule.ClosingTime}.",
+            new[] { $"Closing task at {config.Schedule.ClosingTime}: {config.Schedule.OvernightPowerMode}" },
+            isDryRun: true));
+    }
+
     public Task<ProvisioningResult> ConfigureFirewallRulesAsync(NetworkingMode mode, CancellationToken ct = default)
     {
         Record($"Configure Windows Firewall rules for mode '{mode}'");
@@ -83,6 +92,9 @@ public class DryRunWindowsProvisioningService : IWindowsProvisioningService
         var r7 = await ConfigureFirewallRulesAsync(config.NetworkingMode, ct);
         actions.AddRange(r7.AppliedActions);
 
+        var r8 = await ConfigureClosingPowerTaskAsync(config, paths, ct);
+        actions.AddRange(r8.AppliedActions);
+
         Record($"Full provisioning dry-run completed with {actions.Count} actions.");
         return ProvisioningResult.Ok("[Dry Run] Full exhibition provisioning simulated successfully.", actions, isDryRun: true);
     }
@@ -95,14 +107,8 @@ public class DryRunWindowsProvisioningService : IWindowsProvisioningService
 
     public Task<DiagnosticReport> RunSystemDiagnosticAsync(ExhibitionConfig config, ExhibitionPaths paths, CancellationToken ct = default)
     {
-        var report = new DiagnosticReport();
-        report.Add("Artwork Files", Directory.Exists(paths.ArtworkDirectory), $"Artwork directory: {paths.ArtworkDirectory}", "Place artwork files in the folder.");
-        report.Add("Bundled mpv", File.Exists(paths.MpvExe), $"mpv executable: {paths.MpvExe}", "Ensure mpv.exe is installed in runtime/bin/mpv.");
-        report.Add("Bundled node", File.Exists(paths.NodeExe), $"node executable: {paths.NodeExe}", "Ensure node.exe is installed in runtime/bin/node.");
-        report.Add("Config File", File.Exists(paths.ConfigFile), $"Configuration file: {paths.ConfigFile}", "Run configuration wizard.");
-        report.Add("ArtworkUser Account", true, "[Dry Run] Simulated check passed.");
-        report.Add("Custom Shell", true, "[Dry Run] Simulated check passed.");
-        report.Add("Firewall Rules", true, "[Dry Run] Simulated check passed.");
-        return Task.FromResult(report);
+        // Verification is always read-only and reports observed Windows state,
+        // even when provisioning mutations are disabled on a development PC.
+        return WindowsStateVerifier.InspectAsync(config, paths, ct);
     }
 }

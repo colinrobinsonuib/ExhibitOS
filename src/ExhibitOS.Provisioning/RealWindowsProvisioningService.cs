@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Security.Principal;
+using System.Text;
+using System.Xml.Linq;
 using ExhibitOS.Core.Configuration;
 using ExhibitOS.Provisioning.Diagnostics;
 using ExhibitOS.Provisioning.Safety;
@@ -83,23 +85,9 @@ public class RealWindowsProvisioningService : IWindowsProvisioningService
             key?.SetValue("LimitBlankPasswordUse", 1, RegistryValueKind.DWord);
         }
 
-        // Use secedit or ntrights equivalent via PowerShell script to assign deny logon rights
-        var psScript = $@"
-$secEditInf = [System.IO.Path]::GetTempFileName()
-$secEditSdb = [System.IO.Path]::GetTempFileName()
-secedit /export /cfg $secEditInf /areas USER_RIGHTS
-$content = Get-Content $secEditInf
-# Add deny rights for {username}
-if ($content -notmatch 'SeDenyRemoteInteractiveLogonRight') {{
-    $content += 'SeDenyRemoteInteractiveLogonRight = *S-1-5-32-545'
-}}
-Set-Content $secEditInf $content
-secedit /configure /db $secEditSdb /cfg $secEditInf /areas USER_RIGHTS
-Remove-Item $secEditInf, $secEditSdb -ErrorAction SilentlyContinue
-";
-        await RunCliAsync("powershell", $"-NoProfile -Command \"{psScript}\"", ct);
-
-        return ProvisioningResult.Ok($"Security hardening applied for '{username}'.", new[] { "LimitBlankPasswordUse=1", "Deny Remote Interactive Logon" });
+        return await Task.FromResult(ProvisioningResult.Ok(
+            $"Security hardening applied for '{username}'.",
+            new[] { "LimitBlankPasswordUse=1" }));
     }
 
     public async Task<ProvisioningResult> ApplyVisitorLockdownAsync(string username = "ArtworkUser", CancellationToken ct = default)
@@ -112,15 +100,16 @@ Remove-Item $secEditInf, $secEditSdb -ErrorAction SilentlyContinue
             return ProvisioningResult.Fail($"Cannot locate SID for user '{username}'.");
         }
 
-        // Registry lockdown for user SID
-        var subKeySystem = $@"{sid}\Software\Microsoft\Windows\CurrentVersion\Policies\System";
-        using (var key = Registry.Users.CreateSubKey(subKeySystem))
+        await using var hive = await UserRegistryHive.OpenAsync(
+            username, writable: true, createProfileIfMissing: true, ct)
+            ?? throw new InvalidOperationException($"Windows profile for '{username}' is unavailable.");
+
+        using (var key = hive.Root.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Policies\System"))
         {
             key.SetValue("DisableTaskMgr", 1, RegistryValueKind.DWord);
         }
 
-        var subKeyExplorer = $@"{sid}\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer";
-        using (var key = Registry.Users.CreateSubKey(subKeyExplorer))
+        using (var key = hive.Root.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer"))
         {
             key.SetValue("NoWinKeys", 1, RegistryValueKind.DWord);
         }
@@ -156,8 +145,10 @@ Remove-Item $secEditInf, $secEditSdb -ErrorAction SilentlyContinue
             return ProvisioningResult.Fail($"Cannot locate SID for user '{username}'.");
         }
 
-        var subKey = $@"{sid}\Software\Microsoft\Windows NT\CurrentVersion\Winlogon";
-        using (var key = Registry.Users.CreateSubKey(subKey))
+        await using var hive = await UserRegistryHive.OpenAsync(
+            username, writable: true, createProfileIfMissing: true, ct)
+            ?? throw new InvalidOperationException($"Windows profile for '{username}' is unavailable.");
+        using (var key = hive.Root.CreateSubKey(@"Software\Microsoft\Windows NT\CurrentVersion\Winlogon"))
         {
             key.SetValue("Shell", shellPath, RegistryValueKind.String);
         }
@@ -168,51 +159,160 @@ Remove-Item $secEditInf, $secEditSdb -ErrorAction SilentlyContinue
     public async Task<ProvisioningResult> ConfigureScheduledRebootAsync(TimeOnly rebootTime, CancellationToken ct = default)
     {
         AssertSafety(nameof(ConfigureScheduledRebootAsync));
-
-        var timeStr = rebootTime.ToString("HH:mm");
-        var (exitCode, stdout, stderr) = await RunCliAsync("schtasks", $"/create /tn \"ExhibitOS_DailyReboot\" /tr \"shutdown /r /t 0 /f\" /sc daily /st {timeStr} /ru \"SYSTEM\" /f", ct);
-
-        if (exitCode != 0)
-        {
-            return ProvisioningResult.Fail($"Failed to register reboot task: {stderr} {stdout}");
-        }
-
-        return ProvisioningResult.Ok($"Registered daily morning reboot task for {timeStr}.", new[] { $"Reboot task at {timeStr}" });
+        return await CreateDailyTaskAsync(
+            "ExhibitOS_DailyReboot",
+            "ExhibitOS daily reboot with wake timer",
+            rebootTime,
+            "shutdown.exe",
+            "/r /t 0 /f",
+            wakeToRun: true,
+            ct);
     }
+
+    public async Task<ProvisioningResult> ConfigureClosingPowerTaskAsync(
+        ExhibitionConfig config,
+        ExhibitionPaths paths,
+        CancellationToken ct = default)
+    {
+        AssertSafety(nameof(ConfigureClosingPowerTaskAsync));
+        var closingTime = ExhibitOS.Core.Schedule.ScheduleEvaluator.ParseTime(config.Schedule.ClosingTime, new TimeOnly(20, 0));
+        var action = config.Schedule.OvernightPowerMode switch
+        {
+            OvernightPowerMode.Shutdown => "shutdown",
+            OvernightPowerMode.SleepWithWakeTimers => "sleep",
+            _ => "idle"
+        };
+        return await CreateDailyTaskAsync(
+            "ExhibitOS_ClosingPower",
+            $"ExhibitOS closing power action: {action}",
+            closingTime,
+            paths.WatchdogExe,
+            $"--power-action {action} \"{paths.RootDirectory}\"",
+            wakeToRun: false,
+            ct);
+    }
+
+    private static async Task<ProvisioningResult> CreateDailyTaskAsync(
+        string taskName,
+        string description,
+        TimeOnly triggerTime,
+        string command,
+        string arguments,
+        bool wakeToRun,
+        CancellationToken ct)
+    {
+        var document = BuildDailyTaskDocument(description, triggerTime, command, arguments, wakeToRun);
+
+        var taskXml = Path.Combine(Path.GetTempPath(), $"ExhibitOS-task-{Guid.NewGuid():N}.xml");
+        try
+        {
+            await File.WriteAllTextAsync(taskXml, document.ToString(), Encoding.Unicode, ct);
+            var (exitCode, stdout, stderr) = await RunCliAsync(
+                "schtasks", BuildTaskRegistrationArguments(taskName, taskXml), ct);
+            if (exitCode != 0)
+            {
+                return ProvisioningResult.Fail($"Failed to register task '{taskName}': {stderr} {stdout}".Trim());
+            }
+
+            return ProvisioningResult.Ok(
+                $"Registered Windows task '{taskName}' for {triggerTime:HH:mm}.",
+                new[] { $"Task Scheduler: {taskName} at {triggerTime:HH:mm}" });
+        }
+        finally
+        {
+            File.Delete(taskXml);
+        }
+    }
+
+    internal static XDocument BuildDailyTaskDocument(
+        string description,
+        TimeOnly triggerTime,
+        string command,
+        string arguments,
+        bool wakeToRun)
+    {
+        XNamespace ns = "http://schemas.microsoft.com/windows/2004/02/mit/task";
+        var start = DateTime.Today.Add(triggerTime.ToTimeSpan()).ToString("yyyy-MM-dd'T'HH:mm:ss");
+        return new XDocument(
+            new XDeclaration("1.0", "utf-16", null),
+            new XElement(ns + "Task", new XAttribute("version", "1.4"),
+                new XElement(ns + "RegistrationInfo", new XElement(ns + "Description", description)),
+                new XElement(ns + "Triggers",
+                    new XElement(ns + "CalendarTrigger",
+                        new XElement(ns + "StartBoundary", start),
+                        new XElement(ns + "Enabled", true),
+                        new XElement(ns + "ScheduleByDay", new XElement(ns + "DaysInterval", 1)))),
+                new XElement(ns + "Principals",
+                    new XElement(ns + "Principal", new XAttribute("id", "System"),
+                        new XElement(ns + "UserId", "S-1-5-18"),
+                        new XElement(ns + "RunLevel", "HighestAvailable"))),
+                new XElement(ns + "Settings",
+                    new XElement(ns + "MultipleInstancesPolicy", "IgnoreNew"),
+                    new XElement(ns + "DisallowStartIfOnBatteries", false),
+                    new XElement(ns + "StopIfGoingOnBatteries", false),
+                    new XElement(ns + "StartWhenAvailable", true),
+                    new XElement(ns + "RunOnlyIfNetworkAvailable", false),
+                    new XElement(ns + "WakeToRun", wakeToRun),
+                    new XElement(ns + "Enabled", true),
+                    new XElement(ns + "ExecutionTimeLimit", "PT1H")),
+                new XElement(ns + "Actions", new XAttribute("Context", "System"),
+                    new XElement(ns + "Exec",
+                        new XElement(ns + "Command", command),
+                        new XElement(ns + "Arguments", arguments)))));
+    }
+
+    internal static string BuildTaskRegistrationArguments(string taskName, string taskXml) =>
+        $"/create /tn \"{taskName}\" /xml \"{taskXml}\" /ru SYSTEM /f";
 
     public async Task<ProvisioningResult> ConfigureFirewallRulesAsync(NetworkingMode mode, CancellationToken ct = default)
     {
         AssertSafety(nameof(ConfigureFirewallRulesAsync));
 
-        // First remove existing ExhibitOS rules
-        await RunCliAsync("netsh", "advfirewall firewall delete rule name=all dir=out profile=any", ct);
-
-        switch (mode)
+        // Remove only rules owned by ExhibitOS. Never use `name=all` here: that
+        // deletes unrelated Windows and third-party firewall policy.
+        var ruleNames = new[]
         {
-            case NetworkingMode.OfflineExhibition:
-                // Block all outbound except loopback
-                await RunCliAsync("netsh", "advfirewall firewall add rule name=\"ExhibitOS_Block_All_Out\" dir=out action=block profile=any", ct);
-                await RunCliAsync("netsh", "advfirewall firewall add rule name=\"ExhibitOS_Allow_Loopback_Out_v4\" dir=out action=allow remoteip=127.0.0.1 profile=any", ct);
-                await RunCliAsync("netsh", "advfirewall firewall add rule name=\"ExhibitOS_Allow_Loopback_Out_v6\" dir=out action=allow remoteip=::1 profile=any", ct);
-                break;
+            "ExhibitOS_Block_All_Out",
+            "ExhibitOS_Allow_Loopback_Out_v4",
+            "ExhibitOS_Allow_Loopback_Out_v6",
+            "ExhibitOS_Allow_LAN_1",
+            "ExhibitOS_Allow_LAN_2",
+            "ExhibitOS_Allow_LAN_3",
+            "ExhibitOS_Block_LAN_Out",
+            "ExhibitOS_Block_Wireless_Out",
+            "ExhibitOS_Block_RAS_Out"
+        };
+        foreach (var ruleName in ruleNames)
+        {
+            await RunCliAsync("netsh", $"advfirewall firewall delete rule name=\"{ruleName}\"", ct);
+        }
 
-            case NetworkingMode.LocalNetworkOnly:
-                // Block outbound except private ranges and loopback
-                await RunCliAsync("netsh", "advfirewall firewall add rule name=\"ExhibitOS_Block_All_Out\" dir=out action=block profile=any", ct);
-                await RunCliAsync("netsh", "advfirewall firewall add rule name=\"ExhibitOS_Allow_Loopback_Out_v4\" dir=out action=allow remoteip=127.0.0.1 profile=any", ct);
-                await RunCliAsync("netsh", "advfirewall firewall add rule name=\"ExhibitOS_Allow_Loopback_Out_v6\" dir=out action=allow remoteip=::1 profile=any", ct);
-                await RunCliAsync("netsh", "advfirewall firewall add rule name=\"ExhibitOS_Allow_LAN_1\" dir=out action=allow remoteip=10.0.0.0/8 profile=any", ct);
-                await RunCliAsync("netsh", "advfirewall firewall add rule name=\"ExhibitOS_Allow_LAN_2\" dir=out action=allow remoteip=172.16.0.0/12 profile=any", ct);
-                await RunCliAsync("netsh", "advfirewall firewall add rule name=\"ExhibitOS_Allow_LAN_3\" dir=out action=allow remoteip=192.168.0.0/16 profile=any", ct);
-                break;
+        var commands = BuildFirewallRuleCommands(mode);
 
-            case NetworkingMode.InternetEnabled:
-                // Default Windows firewall allows outbound
-                break;
+        foreach (var command in commands)
+        {
+            var result = await RunCliAsync("netsh", command, ct);
+            if (result.ExitCode != 0)
+            {
+                return ProvisioningResult.Fail(
+                    $"Windows could not configure the ExhibitOS firewall rules: {result.StdErr} {result.StdOut}".Trim());
+            }
         }
 
         return ProvisioningResult.Ok($"Configured firewall for {mode}.", new[] { $"Firewall mode: {mode}" });
     }
+
+    internal static IReadOnlyList<string> BuildFirewallRuleCommands(NetworkingMode mode) => mode switch
+        {
+            NetworkingMode.LocalhostOnly => new[]
+            {
+                "advfirewall firewall add rule name=\"ExhibitOS_Block_LAN_Out\" dir=out action=block profile=any interfacetype=lan enable=yes",
+                "advfirewall firewall add rule name=\"ExhibitOS_Block_Wireless_Out\" dir=out action=block profile=any interfacetype=wireless enable=yes",
+                "advfirewall firewall add rule name=\"ExhibitOS_Block_RAS_Out\" dir=out action=block profile=any interfacetype=ras enable=yes"
+            },
+            NetworkingMode.InternetEnabled => Array.Empty<string>(),
+            _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unsupported networking mode.")
+        };
 
     public async Task<ProvisioningResult> ApplyFullProvisioningAsync(ExhibitionConfig config, ExhibitionPaths paths, CancellationToken ct = default)
     {
@@ -249,6 +349,10 @@ Remove-Item $secEditInf, $secEditSdb -ErrorAction SilentlyContinue
         if (!r7.Success) return r7;
         actions.AddRange(r7.AppliedActions);
 
+        var r8 = await ConfigureClosingPowerTaskAsync(config, paths, ct);
+        if (!r8.Success) return r8;
+        actions.AddRange(r8.AppliedActions);
+
         return ProvisioningResult.Ok("Full exhibition provisioning completed successfully.", actions);
     }
 
@@ -269,15 +373,17 @@ Remove-Item $secEditInf, $secEditSdb -ErrorAction SilentlyContinue
         var sid = GetUserSid("ArtworkUser");
         if (!string.IsNullOrEmpty(sid))
         {
-            using (var key = Registry.Users.OpenSubKey($@"{sid}\Software\Microsoft\Windows NT\CurrentVersion\Winlogon", writable: true))
+            await using var hive = await UserRegistryHive.OpenAsync(
+                "ArtworkUser", writable: true, createProfileIfMissing: false, ct);
+            using (var key = hive?.Root.OpenSubKey(@"Software\Microsoft\Windows NT\CurrentVersion\Winlogon", writable: true))
             {
                 key?.DeleteValue("Shell", false);
             }
-            using (var key = Registry.Users.OpenSubKey($@"{sid}\Software\Microsoft\Windows\CurrentVersion\Policies\System", writable: true))
+            using (var key = hive?.Root.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Policies\System", writable: true))
             {
                 key?.DeleteValue("DisableTaskMgr", false);
             }
-            using (var key = Registry.Users.OpenSubKey($@"{sid}\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", writable: true))
+            using (var key = hive?.Root.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", writable: true))
             {
                 key?.DeleteValue("NoWinKeys", false);
             }
@@ -286,7 +392,8 @@ Remove-Item $secEditInf, $secEditSdb -ErrorAction SilentlyContinue
 
         // Delete scheduled task
         await RunCliAsync("schtasks", "/delete /tn \"ExhibitOS_DailyReboot\" /f", ct);
-        actions.Add("Deleted scheduled reboot task");
+        await RunCliAsync("schtasks", "/delete /tn \"ExhibitOS_ClosingPower\" /f", ct);
+        actions.Add("Deleted scheduled reboot and closing-power tasks");
 
         // Delete custom firewall rules
         await RunCliAsync("netsh", "advfirewall firewall delete rule name=\"ExhibitOS_Block_All_Out\"", ct);
@@ -295,6 +402,9 @@ Remove-Item $secEditInf, $secEditSdb -ErrorAction SilentlyContinue
         await RunCliAsync("netsh", "advfirewall firewall delete rule name=\"ExhibitOS_Allow_LAN_1\"", ct);
         await RunCliAsync("netsh", "advfirewall firewall delete rule name=\"ExhibitOS_Allow_LAN_2\"", ct);
         await RunCliAsync("netsh", "advfirewall firewall delete rule name=\"ExhibitOS_Allow_LAN_3\"", ct);
+        await RunCliAsync("netsh", "advfirewall firewall delete rule name=\"ExhibitOS_Block_LAN_Out\"", ct);
+        await RunCliAsync("netsh", "advfirewall firewall delete rule name=\"ExhibitOS_Block_Wireless_Out\"", ct);
+        await RunCliAsync("netsh", "advfirewall firewall delete rule name=\"ExhibitOS_Block_RAS_Out\"", ct);
         actions.Add("Removed custom firewall rules");
 
         if (deleteArtworkUser)
@@ -308,19 +418,7 @@ Remove-Item $secEditInf, $secEditSdb -ErrorAction SilentlyContinue
 
     public async Task<DiagnosticReport> RunSystemDiagnosticAsync(ExhibitionConfig config, ExhibitionPaths paths, CancellationToken ct = default)
     {
-        var report = new DiagnosticReport();
-
-        report.Add("Artwork Directory", Directory.Exists(paths.ArtworkDirectory), $"Artwork directory exists: {paths.ArtworkDirectory}", "Create artwork folder.");
-        report.Add("Config File", File.Exists(paths.ConfigFile), $"Config file exists: {paths.ConfigFile}", "Run setup wizard to generate configuration.");
-        report.Add("Watchdog Binary", File.Exists(paths.WatchdogExe), $"Watchdog executable exists: {paths.WatchdogExe}", "Compile and install ExhibitWatchdog.exe.");
-        report.Add("Bundled mpv", File.Exists(paths.MpvExe), $"mpv executable exists: {paths.MpvExe}", "Install mpv in runtime/bin/mpv.");
-        report.Add("Bundled node", File.Exists(paths.NodeExe), $"node executable exists: {paths.NodeExe}", "Install node in runtime/bin/node.");
-
-        // Check ArtworkUser
-        var (userCode, _, _) = await RunCliAsync("net", "user ArtworkUser", ct);
-        report.Add("ArtworkUser Account", userCode == 0, userCode == 0 ? "ArtworkUser account exists." : "ArtworkUser account not found.", "Run configuration to create ArtworkUser.");
-
-        return report;
+        return await WindowsStateVerifier.InspectAsync(config, paths, ct);
     }
 
     private static string? GetUserSid(string username)

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using ExhibitOS.Core.Configuration;
+using ExhibitOS.Core.Browsers;
 using ExhibitOS.Core.Logging;
 using ExhibitOS.Core.Network;
 using ExhibitOS.Core.Power;
@@ -18,6 +19,7 @@ public class ArtworkSupervisor : IDisposable
     private readonly HttpHealthProbes _probes;
     private readonly Lockdown.LowLevelKeyboardHook _keyboardHook;
     private readonly Display.DisplayManager _displayManager;
+    private readonly bool _previewMode;
 
     private IJobObject? _primaryJob;
     private IJobObject? _secondaryJob; // e.g. Edge kiosk when primary is Node
@@ -31,7 +33,8 @@ public class ArtworkSupervisor : IDisposable
         ExhibitionPaths paths,
         IJobObjectFactory? jobFactory = null,
         WatchdogLogger? logger = null,
-        HttpHealthProbes? probes = null)
+        HttpHealthProbes? probes = null,
+        bool previewMode = false)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
@@ -39,6 +42,7 @@ public class ArtworkSupervisor : IDisposable
         _logger = logger ?? new WatchdogLogger(paths.WatchdogLog);
         _scheduleEvaluator = new ScheduleEvaluator(config.Schedule);
         _probes = probes ?? new HttpHealthProbes();
+        _previewMode = previewMode;
         _keyboardHook = new Lockdown.LowLevelKeyboardHook();
         _displayManager = new Display.DisplayManager();
     }
@@ -89,7 +93,7 @@ public class ArtworkSupervisor : IDisposable
                         }
                         else
                         {
-                            _logger.Info("Cutting display signal (DPMS Signal Off) for overnight display.");
+                            _logger.Info("Turning off the display for closed hours.");
                             Display.DisplayManager.SetMonitorPower(Display.MonitorPowerState.Off);
                         }
                     }
@@ -137,12 +141,15 @@ public class ArtworkSupervisor : IDisposable
         _displayManager.CloseBlackoutScreen();
         Display.DisplayManager.SetMonitorPower(Display.MonitorPowerState.On);
 
-        if (_config.DisplayAndSound.HideCursor)
+        if (!_previewMode && _config.DisplayAndSound.HideCursor)
         {
             _displayManager.SetCursorVisibility(false);
         }
 
-        _keyboardHook.Install();
+        if (!_previewMode)
+        {
+            _keyboardHook.Install();
+        }
 
         switch (_config.Artwork.Type)
         {
@@ -208,7 +215,13 @@ public class ArtworkSupervisor : IDisposable
         var process = LaunchProcess(mpvExe, args, artworkDir);
         if (process != null)
         {
-            _primaryJob.AssignProcess(process);
+            if (!_primaryJob.AssignProcess(process))
+            {
+                _logger.Error($"Failed to assign mpv process {process.Id} to its Job Object.");
+                process.Kill(entireProcessTree: true);
+                StopArtwork();
+                return false;
+            }
             _logger.Info($"Launched mpv (PID: {process.Id}) in mpv Job Object.");
             return true;
         }
@@ -236,7 +249,13 @@ public class ArtworkSupervisor : IDisposable
             return false;
         }
 
-        _primaryJob.AssignProcess(nodeProc);
+        if (!_primaryJob.AssignProcess(nodeProc))
+        {
+            _logger.Error($"Failed to assign static server process {nodeProc.Id} to its Job Object.");
+            nodeProc.Kill(entireProcessTree: true);
+            StopArtwork();
+            return false;
+        }
 
         // Readiness probe
         var url = $"http://127.0.0.1:{_allocatedPort}/";
@@ -285,7 +304,13 @@ public class ArtworkSupervisor : IDisposable
             return false;
         }
 
-        _primaryJob.AssignProcess(nodeProc);
+        if (!_primaryJob.AssignProcess(nodeProc))
+        {
+            _logger.Error($"Failed to assign backend process {nodeProc.Id} to its Job Object.");
+            nodeProc.Kill(entireProcessTree: true);
+            StopArtwork();
+            return false;
+        }
 
         // Readiness probe
         var url = $"http://127.0.0.1:{_allocatedPort}/";
@@ -320,7 +345,13 @@ public class ArtworkSupervisor : IDisposable
         var proc = LaunchProcess(exePath, args, artworkDir);
         if (proc != null)
         {
-            _primaryJob.AssignProcess(proc);
+            if (!_primaryJob.AssignProcess(proc))
+            {
+                _logger.Error($"Failed to assign application process {proc.Id} to its Job Object.");
+                proc.Kill(entireProcessTree: true);
+                StopArtwork();
+                return false;
+            }
             _logger.Info($"Launched application '{exePath}' (PID: {proc.Id}) in App Job Object.");
             return true;
         }
@@ -331,16 +362,33 @@ public class ArtworkSupervisor : IDisposable
 
     private bool LaunchEdgeKiosk(string url)
     {
+        var edgeExe = EdgeLocator.FindInstalledEdge();
+        if (edgeExe is null)
+        {
+            _logger.Error("Microsoft Edge was not found. Install Edge before testing a web artwork.");
+            return false;
+        }
+
         _secondaryJob = _jobFactory.CreateJobObject("ExhibitOS_Edge");
 
         var userDataDir = Path.Combine(_paths.RuntimeDirectory, "edge-data");
-        var edgeArgs = $"--kiosk \"{url}\" --edge-kiosk-type=fullscreen --no-first-run --overscroll-history-navigation=0 --disable-pinch --user-data-dir=\"{userDataDir}\"";
+        var presentationArgs = _previewMode
+            ? $"--app=\"{url}\""
+            : $"--kiosk \"{url}\" --edge-kiosk-type=fullscreen";
+        var edgeArgs = $"{presentationArgs} --no-first-run --overscroll-history-navigation=0 --disable-pinch --user-data-dir=\"{userDataDir}\"";
 
-        var edgeProc = LaunchProcess("msedge.exe", edgeArgs, _paths.RuntimeDirectory);
+        var edgeProc = LaunchProcess(edgeExe, edgeArgs, _paths.RuntimeDirectory);
         if (edgeProc != null)
         {
-            _secondaryJob.AssignProcess(edgeProc);
-            _logger.Info($"Launched Edge kiosk (PID: {edgeProc.Id}) pointing to {url}.");
+            if (!_secondaryJob.AssignProcess(edgeProc))
+            {
+                _logger.Error($"Failed to assign Edge process {edgeProc.Id} to its Job Object.");
+                edgeProc.Kill(entireProcessTree: true);
+                _secondaryJob.Dispose();
+                _secondaryJob = null;
+                return false;
+            }
+            _logger.Info($"Launched Edge {(_previewMode ? "preview" : "kiosk")} (PID: {edgeProc.Id}) pointing to {url}.");
             return true;
         }
 
