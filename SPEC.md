@@ -14,7 +14,7 @@ After configuration, the computer should behave like an appliance:
 
 * automatically enter the artwork environment after boot via a dedicated restricted user (`ArtworkUser`)
 * run the artwork fullscreen
-* prevent visitors from accessing Windows (no Explorer, no Start menu, no taskbar, no desktop shortcuts)
+* prevent visitors from obtaining a general-purpose Windows UI (no Explorer, no Start menu, no taskbar, no Task Manager, no shell-escape hotkeys)
 * follow exhibition opening/closing hours and overnight power policies
 * recover from common failures via a supervised watchdog and Windows Job Objects
 * require minimal daily intervention
@@ -138,6 +138,8 @@ ExhibitOS should:
 
 Artists who need custom launch parameters (e.g., Unity's `-screen-fullscreen 1 -screen-width 1920`) should provide a batch script or wrapper as their launch executable rather than the artwork binary directly. ExhibitOS does not manage command-line arguments for artwork executables.
 
+Note: A batch wrapper may launch the real artwork process and immediately exit. The watchdog must determine component liveness based on the **supervised process tree within the Job Object**, not the original launcher PID. The component is considered alive as long as any process remains in its Job Object, and dead only when the Job Object is empty.
+
 ---
 
 ## 3. Artwork Directory & Filesystem Layout
@@ -203,7 +205,16 @@ HKU\<ArtworkUser_SID>\Software\Microsoft\Windows NT\CurrentVersion\Winlogon\Shel
 * When `ArtworkUser` logs on, **`explorer.exe` is never launched**.
 * Without Explorer, there is no desktop, no taskbar, no Start menu, no system notifications, and no standard shell hotkeys (`Win+E`, `Win+R`, `Win+X`).
 * The watchdog (`ExhibitWatchdog.exe`) is the shell: it starts up immediately, establishes the display/power state, enforces the schedule, and supervises the artwork process tree.
-* Protection against visitor escape: visitors cannot access Windows Explorer, the command prompt, or settings.
+
+### Visitor Escape Prevention
+
+The core requirement is: **a visitor at the physical machine must not be able to obtain a general-purpose Windows UI**. Replacing Explorer with a custom shell removes a large amount of Windows UI surface, but does not by itself constitute a complete lockdown. ExhibitOS must explicitly close remaining escape routes for `ArtworkUser`:
+
+* **Task Manager**: Disable Task Manager for `ArtworkUser` (registry: `DisableTaskMgr`). Without this, `Ctrl+Alt+Delete → Task Manager` or `Ctrl+Shift+Esc` allows launching arbitrary processes via "Run new task."
+* **Shell hotkeys**: Disable or suppress `Win` key, `Win+R`, `Win+E`, `Win+X`, `Alt+Tab`, `Ctrl+Shift+Esc`, and other shell-escape key combinations for the `ArtworkUser` session.
+* **Alt+F4**: Suppress `Alt+F4` on the artwork window to prevent visitors from closing the artwork and reaching a bare desktop (which, without Explorer, is an empty screen — but still a potential stepping stone).
+* **Edge kiosk dialogs**: When Edge is used for Web Artworks, configure it to suppress file download prompts, "Open file" dialogs, and other UI that could provide filesystem access. The dedicated `--user-data-dir` and kiosk mode flags already restrict most of this, but verify and harden as needed.
+* **Switch User**: Preserve `Ctrl+Alt+Delete` access to the Windows security screen, and specifically preserve the **Switch User** option so technicians can reach the Administrator account. The security screen itself does not provide a general-purpose UI.
 
 ### Technician Maintenance Access
 
@@ -267,8 +278,8 @@ Provide three networking modes configured via the **Windows Filtering Platform (
 
 ### Local Network Only
 
-* Allow inbound and outbound traffic within the local subnet and private IP ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`).
-* Block all outbound traffic to public internet addresses.
+* Allow inbound and outbound traffic within the local subnet and LAN over both **IPv4 and IPv6**; deny non-local Internet traffic.
+* The firewall implementation determines the actual address ranges (e.g., RFC 1918 for IPv4, link-local and ULA for IPv6).
 * Supports multi-machine installations, networked sensor arrays, OSC controllers, and local media servers without internet exposure.
 
 ### Internet Enabled
@@ -284,6 +295,7 @@ Windows configuration is applied idempotently by `ExhibitOSManager.exe` running 
 
 * creation of the passwordless `ArtworkUser` account
 * hardening of `ArtworkUser` security: enforce blank-password console-only policy, deny Remote Desktop logon, deny network logon
+* visitor lockdown for `ArtworkUser`: disable Task Manager, suppress shell-escape hotkeys, suppress `Alt+F4`
 * configuration of `AutoAdminLogon` for `ArtworkUser`
 * setting the custom user shell (`ExhibitWatchdog.exe`) for `ArtworkUser`
 * creation of Windows Task Scheduler tasks for scheduled reboot
@@ -349,7 +361,10 @@ Application:
 
 * If a supervised component exits unexpectedly during exhibition hours, the watchdog attempts to restart the appropriate component independently.
 * Exponential backoff and maximum retry thresholds prevent unrecoverable crash loops.
-* For Web Artworks, the watchdog verifies the HTTP server is responsive before launching or reloading the browser.
+* **Post-exhaustion recovery**: After a component exhausts its retry threshold, the watchdog does not give up permanently. Instead, it performs a bounded whole-machine recovery — e.g., one system reboot — then resumes normal retry policy after startup. For unattended exhibitions, "give up forever" is not acceptable. Exact retry counts and backoff parameters are implementation details.
+* For Web Artworks, the watchdog verifies the HTTP server is responsive before launching or reloading the browser (**startup readiness probe**).
+* **Periodic HTTP liveness checks**: During exhibition operation, the watchdog performs low-frequency HTTP health checks against the static or backend server. A Node process can remain alive while its event loop or backend is wedged. Several consecutive liveness failures trigger a backend/static-server restart even if `node.exe` is still running.
+* Component liveness for all artwork types is determined by the **supervised process tree within the Job Object**, not merely the original launcher PID. A component is alive as long as any process remains in its Job Object, and dead only when the Job Object is empty.
 * All lifecycle events, process starts, exits, and restart attempts are logged to `C:\ExhibitOS\logs\watchdog.log`.
 
 ### Logging
@@ -475,10 +490,11 @@ The **Run System Diagnostic** button checks:
 * Artwork files present in `C:\ExhibitOS\artwork`
 * Bundled runtimes present (`mpv.exe`, `node.exe`)
 * Microsoft Edge installed and launchable (for Web Artworks)
-* Backend entry point (`server.js`) and `node_modules` present (where applicable)
+* Backend entry point (`server.js`) present (where applicable)
 * Backend readiness probe succeeds
 * `ArtworkUser` account exists and passwordless logon is configured
 * `ArtworkUser` security hardening is in place (Remote Desktop denied, network logon denied)
+* Visitor lockdown policies active for `ArtworkUser` (Task Manager disabled, shell-escape hotkeys suppressed)
 * Custom shell registry key is correctly pointing to `ExhibitWatchdog.exe`
 * Windows Firewall rules correctly enforce the selected networking mode
 * Selected audio playback device is connected and available; warn if the configured device is missing
@@ -497,12 +513,15 @@ Result displayed clearly:
 Provide an administrator action: **Restore PC to Normal Use**.
 
 This cleanly reverses all exhibition modifications:
-* Restores default Windows shell (`explorer.exe`) for all users
+* Removes the custom shell registry key for `ArtworkUser`, restoring the default Windows shell for that account
+* Removes visitor lockdown policies (Task Manager restriction, hotkey suppression)
 * Removes custom firewall rules
 * Disables `AutoAdminLogon`
 * Removes scheduled Task Scheduler reboot jobs
 * Optionally deletes or disables the `ArtworkUser` account
 * Restores normal Windows power and notification settings
+
+Other user accounts are never modified during restoration.
 
 ### Uninstall
 
@@ -510,7 +529,9 @@ The installer registers a standard Windows uninstaller. Uninstalling ExhibitOS:
 
 * Runs the "Restore PC to Normal Use" process (reverses all system modifications)
 * Deletes the `ArtworkUser` account
-* Removes the `C:\ExhibitOS` directory (runtime, configuration, and logs)
+* Removes `C:\ExhibitOS` runtime, configuration, and logs
+* **Preserves `C:\ExhibitOS\artwork` by default** — the operator manually placed these files and they may be the only local copy of large artwork assets
+* Offers an explicit opt-in checkbox: **"Also delete artwork files"** with a destructive confirmation, for operators who want a complete cleanup
 * Removes the uninstaller registry entry
 
 ---
@@ -583,9 +604,28 @@ The installer registers a standard Windows uninstaller. Uninstalling ExhibitOS:
   5. `Ctrl+Alt+Delete` allows switching back to Admin
   6. Component Job Object isolation (killing Edge Job does not kill Node; killing Node Job does not kill Edge)
   7. Edge process tree captured in Job Object via dedicated `--user-data-dir`
-  8. Missed morning reboot fallback after manual wake from sleep
-  9. Offline firewall rules block internet while preserving `localhost`
-  10. Dynamic port assignment for static and backend servers
-  11. Full restoration to normal PC state
-  12. Complete uninstall including `ArtworkUser` deletion
+  8. Batch/script launcher exits but artwork process tree remains alive in Job Object (no spurious relaunch)
+  9. Missed morning reboot fallback after manual wake from sleep
+  10. Offline firewall rules block internet while preserving `localhost`
+  11. Local Network Only rules apply to both IPv4 and IPv6
+  12. Dynamic port assignment for static and backend servers
+  13. Periodic HTTP liveness check detects wedged Node process and restarts it
+  14. Post-exhaustion recovery triggers system reboot and resumes retry policy
+  15. Full restoration to normal PC state (only ArtworkUser shell modified, other accounts untouched)
+  16. Uninstall preserves `C:\ExhibitOS\artwork` by default; opt-in deletes it
+  17. Complete uninstall including `ArtworkUser` deletion
+* **Visitor Escape Test Matrix** — verify each route is blocked for `ArtworkUser`:
+
+  | Input | Expected Result |
+  |---|---|
+  | `Windows` key | Suppressed, no Start menu |
+  | `Win+R` | Suppressed, no Run dialog |
+  | `Win+E` | Suppressed, no Explorer |
+  | `Win+X` | Suppressed, no power-user menu |
+  | `Ctrl+Shift+Esc` | Suppressed, no Task Manager |
+  | `Alt+Tab` | Suppressed, no task switcher |
+  | `Alt+F4` | Suppressed on artwork window |
+  | `Ctrl+Alt+Delete` | Security screen appears; **Switch User available**; **Task Manager disabled** |
+  | Edge download/open dialog | Suppressed or non-functional in kiosk mode |
+
 * Physical mini-PC hardware verification for HDMI audio routing, projector blackout behavior, and sleep/wake timers.

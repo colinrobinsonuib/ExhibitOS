@@ -1,0 +1,13 @@
+# Local VirtualBox test machine (large, generated machine state)
+test-environment/virtualbox/
+vbox/
+
+# Build and IDE artifacts
+bin/
+obj/
+.vs/
+*.user
+# Staged runtimes and distribution packages
+runtime/bin/**/*.exe
+dist/
+dist-installer/

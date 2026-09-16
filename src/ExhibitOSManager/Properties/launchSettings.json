@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "ExhibitOSManager (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "ExhibitOSManager (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}
