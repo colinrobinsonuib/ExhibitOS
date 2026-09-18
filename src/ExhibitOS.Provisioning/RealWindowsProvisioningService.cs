@@ -353,7 +353,25 @@ public class RealWindowsProvisioningService : IWindowsProvisioningService
         if (!r8.Success) return r8;
         actions.AddRange(r8.AppliedActions);
 
+        var r9 = await ConfigureEdgePoliciesAsync(ct);
+        if (!r9.Success) return r9;
+        actions.AddRange(r9.AppliedActions);
+
         return ProvisioningResult.Ok("Full exhibition provisioning completed successfully.", actions);
+    }
+
+    public async Task<ProvisioningResult> ConfigureEdgePoliciesAsync(CancellationToken ct = default)
+    {
+        AssertSafety(nameof(ConfigureEdgePoliciesAsync));
+
+        using (var key = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Policies\Microsoft\Edge"))
+        {
+            key.SetValue("AutoplayAllowed", 1, RegistryValueKind.DWord);
+        }
+
+        return await Task.FromResult(ProvisioningResult.Ok(
+            "Configured Microsoft Edge policies (AutoplayAllowed=1).",
+            new[] { "AutoplayAllowed=1" }));
     }
 
     public async Task<ProvisioningResult> RestoreToNormalUseAsync(bool deleteArtworkUser = false, CancellationToken ct = default)
@@ -368,6 +386,13 @@ public class RealWindowsProvisioningService : IWindowsProvisioningService
             key?.SetValue("AutoAdminLogon", "0", RegistryValueKind.String);
         }
         actions.Add("Disabled AutoAdminLogon");
+
+        // Remove Edge autoplay policy
+        using (var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Policies\Microsoft\Edge", writable: true))
+        {
+            key?.DeleteValue("AutoplayAllowed", false);
+        }
+        actions.Add("Removed Edge autoplay policy");
 
         // Remove custom shell and lockdown keys
         var sid = GetUserSid("ArtworkUser");

@@ -15,6 +15,7 @@ public interface IWindowsProvisioningService
     Task<ProvisioningResult> ConfigureScheduledRebootAsync(TimeOnly rebootTime, CancellationToken ct = default);
     Task<ProvisioningResult> ConfigureClosingPowerTaskAsync(ExhibitionConfig config, ExhibitionPaths paths, CancellationToken ct = default);
     Task<ProvisioningResult> ConfigureFirewallRulesAsync(NetworkingMode mode, CancellationToken ct = default);
+    Task<ProvisioningResult> ConfigureEdgePoliciesAsync(CancellationToken ct = default);
     Task<ProvisioningResult> ApplyFullProvisioningAsync(ExhibitionConfig config, ExhibitionPaths paths, CancellationToken ct = default);
     Task<ProvisioningResult> RestoreToNormalUseAsync(bool deleteArtworkUser = false, CancellationToken ct = default);
     Task<DiagnosticReport> RunSystemDiagnosticAsync(ExhibitionConfig config, ExhibitionPaths paths, CancellationToken ct = default);

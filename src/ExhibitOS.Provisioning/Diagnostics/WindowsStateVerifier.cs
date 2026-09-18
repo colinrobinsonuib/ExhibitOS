@@ -31,6 +31,7 @@ public static class WindowsStateVerifier
         var sid = accountExists ? GetUserSid(ArtworkUsername) : null;
         InspectAutoLogon(report);
         InspectBlankPasswordPolicy(report);
+        InspectEdgePolicies(report);
         await InspectPerUserRegistryAsync(report, sid, paths, ct);
         await InspectRebootTaskAsync(report, config, ct);
         await InspectClosingPowerTimerAsync(report, config, paths, ct);
@@ -95,6 +96,25 @@ public static class WindowsStateVerifier
         catch (Exception ex)
         {
             report.Add("Blank-password remote-use restriction", DiagnosticState.Error, $"Registry check failed: {ex.Message}");
+        }
+    }
+
+    private static void InspectEdgePolicies(DiagnosticReport report)
+    {
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Policies\Microsoft\Edge");
+            var actual = Convert.ToInt32(key?.GetValue("AutoplayAllowed") ?? 0);
+            report.Add("Edge autoplay policy",
+                actual == 1 ? DiagnosticState.Confirmed : DiagnosticState.Missing,
+                actual == 1
+                    ? "Edge AutoplayAllowed policy is enabled."
+                    : $"Observed Edge AutoplayAllowed={actual}.",
+                "Reapply exhibition provisioning.");
+        }
+        catch (Exception ex)
+        {
+            report.Add("Edge autoplay policy", DiagnosticState.Error, $"Registry check failed: {ex.Message}");
         }
     }
 

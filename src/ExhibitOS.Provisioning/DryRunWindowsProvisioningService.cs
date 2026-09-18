@@ -66,6 +66,12 @@ public class DryRunWindowsProvisioningService : IWindowsProvisioningService
         return Task.FromResult(ProvisioningResult.Ok($"[Dry Run] Firewall rules configured for '{mode}'.", new[] { $"Firewall: {mode}" }, isDryRun: true));
     }
 
+    public Task<ProvisioningResult> ConfigureEdgePoliciesAsync(CancellationToken ct = default)
+    {
+        Record("Configure Edge autoplay policy in registry (AutoplayAllowed=1)");
+        return Task.FromResult(ProvisioningResult.Ok("[Dry Run] Edge autoplay policy configured.", new[] { "AutoplayAllowed=1" }, isDryRun: true));
+    }
+
     public async Task<ProvisioningResult> ApplyFullProvisioningAsync(ExhibitionConfig config, ExhibitionPaths paths, CancellationToken ct = default)
     {
         var actions = new List<string>();
@@ -95,13 +101,16 @@ public class DryRunWindowsProvisioningService : IWindowsProvisioningService
         var r8 = await ConfigureClosingPowerTaskAsync(config, paths, ct);
         actions.AddRange(r8.AppliedActions);
 
+        var r9 = await ConfigureEdgePoliciesAsync(ct);
+        actions.AddRange(r9.AppliedActions);
+
         Record($"Full provisioning dry-run completed with {actions.Count} actions.");
         return ProvisioningResult.Ok("[Dry Run] Full exhibition provisioning simulated successfully.", actions, isDryRun: true);
     }
 
     public Task<ProvisioningResult> RestoreToNormalUseAsync(bool deleteArtworkUser = false, CancellationToken ct = default)
     {
-        Record($"Restore PC to normal use (remove custom shell, remove lockdown, remove firewall rules, disable AutoAdminLogon, remove reboot task, deleteArtworkUser: {deleteArtworkUser})");
+        Record($"Restore PC to normal use (remove custom shell, remove lockdown, remove Edge policies, remove firewall rules, disable AutoAdminLogon, remove reboot task, deleteArtworkUser: {deleteArtworkUser})");
         return Task.FromResult(ProvisioningResult.Ok("[Dry Run] Restore to normal use simulated successfully.", new[] { "Restored normal configuration" }, isDryRun: true));
     }
 

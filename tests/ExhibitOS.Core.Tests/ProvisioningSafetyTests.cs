@@ -27,6 +27,11 @@ public class ProvisioningSafetyTests
         {
             await realService.ConfigureAutoAdminLogonAsync("ArtworkUser");
         });
+
+        await Assert.ThrowsAsync<DevelopmentEnvironmentSafetyException>(async () =>
+        {
+            await realService.ConfigureEdgePoliciesAsync();
+        });
     }
 
     [Fact]
@@ -87,6 +92,7 @@ public class ProvisioningSafetyTests
         Assert.Contains(report.Items, item => item.Name == "Daily reboot timer");
         Assert.Contains(report.Items, item => item.Name == "Closing power timer");
         Assert.Contains(report.Items, item => item.Name == "ExhibitOS firewall policy");
+        Assert.Contains(report.Items, item => item.Name == "Edge autoplay policy");
         Assert.DoesNotContain(report.Items, item => item.Message.Contains("Simulated", StringComparison.OrdinalIgnoreCase));
     }
 

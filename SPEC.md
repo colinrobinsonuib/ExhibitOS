@@ -63,7 +63,7 @@ ExhibitOS should:
 * provide an integrated local static HTTP server using the bundled Node.js runtime
 * bind the static server to `127.0.0.1` on an OS-assigned free port (no fixed port reservation)
 * the static server reports its assigned port to the watchdog, which then launches Edge at the corresponding `http://127.0.0.1:<port>` URL
-* open it automatically in **Microsoft Edge** in fullscreen kiosk mode (`--kiosk http://127.0.0.1:<port> --edge-kiosk-type=fullscreen --no-first-run --overscroll-history-navigation=0 --disable-pinch`)
+* open it automatically in **Microsoft Edge** in fullscreen kiosk mode (`--kiosk http://127.0.0.1:<port> --edge-kiosk-type=fullscreen --autoplay-policy=no-user-gesture-required --no-first-run --overscroll-history-navigation=0 --disable-pinch`)
 * use a dedicated `--user-data-dir` for the ExhibitOS Edge instance, isolating it from any other Edge profiles or sessions
 * monitor the required runtime components independently
 * recover if the browser or static server exits unexpectedly
@@ -213,7 +213,7 @@ The core requirement is: **a visitor at the physical machine must not be able to
 * **Task Manager**: Disable Task Manager for `ArtworkUser` (registry: `DisableTaskMgr`). Without this, `Ctrl+Alt+Delete → Task Manager` or `Ctrl+Shift+Esc` allows launching arbitrary processes via "Run new task."
 * **Shell hotkeys**: Disable or suppress `Win` key, `Win+R`, `Win+E`, `Win+X`, `Alt+Tab`, `Ctrl+Shift+Esc`, and other shell-escape key combinations for the `ArtworkUser` session.
 * **Alt+F4**: Suppress `Alt+F4` on the artwork window to prevent visitors from closing the artwork and reaching a bare desktop (which, without Explorer, is an empty screen — but still a potential stepping stone).
-* **Edge kiosk dialogs**: When Edge is used for Web Artworks, configure it to suppress file download prompts, "Open file" dialogs, and other UI that could provide filesystem access. The dedicated `--user-data-dir` and kiosk mode flags already restrict most of this, but verify and harden as needed.
+* **Edge kiosk dialogs & audio autoplay**: When Edge is used for Web Artworks, configure it to suppress file download prompts, "Open file" dialogs, and other UI that could provide filesystem access. The dedicated `--user-data-dir` and kiosk mode flags already restrict most of this. In addition, launch Edge with `--autoplay-policy=no-user-gesture-required` and provision machine-wide policy `AutoplayAllowed = 1` in `HKLM\SOFTWARE\Policies\Microsoft\Edge` so that audio/sound can play automatically on startup without requiring user interaction.
 * **Switch User**: Preserve `Ctrl+Alt+Delete` access to the Windows security screen, and specifically preserve the **Switch User** option so technicians can reach the Administrator account. The security screen itself does not provide a general-purpose UI.
 
 ### Technician Maintenance Access

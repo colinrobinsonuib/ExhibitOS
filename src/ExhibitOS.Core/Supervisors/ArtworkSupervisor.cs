@@ -375,7 +375,7 @@ public class ArtworkSupervisor : IDisposable
         var presentationArgs = _previewMode
             ? $"--app=\"{url}\""
             : $"--kiosk \"{url}\" --edge-kiosk-type=fullscreen";
-        var edgeArgs = $"{presentationArgs} --no-first-run --overscroll-history-navigation=0 --disable-pinch --user-data-dir=\"{userDataDir}\"";
+        var edgeArgs = $"{presentationArgs} --autoplay-policy=no-user-gesture-required --no-first-run --overscroll-history-navigation=0 --disable-pinch --user-data-dir=\"{userDataDir}\"";
 
         var edgeProc = LaunchProcess(edgeExe, edgeArgs, _paths.RuntimeDirectory);
         if (edgeProc != null)
